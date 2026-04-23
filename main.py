@@ -54,7 +54,11 @@ app = FastAPI(title="BTC Decision Dashboard API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["btc-dashboard-api-production.up.railway.app"],
+    allow_origins=[
+        "https://your-frontend.up.railway.app",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
