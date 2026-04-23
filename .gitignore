@@ -1,0 +1,6 @@
+.env
+venv/
+__pycache__/
+*.db
+judgment_log.json
+trade_log.json
