@@ -1,8 +1,45 @@
 from __future__ import annotations
 from typing import Optional
-import sqlite3
 import time
 from datetime import datetime, timezone
+import sqlite3
+from pathlib import Path
+
+DB_PATH = Path("basis_history.db")
+
+def init_basis_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cme_basis (
+                date        TEXT PRIMARY KEY,
+                annualized  REAL,
+                raw_basis   REAL,
+                futures_px  REAL,
+                spot_px     REAL,
+                days_expiry INTEGER
+            )
+        """)
+        conn.commit()
+
+init_basis_db()
+
+def store_basis_snapshot(annualized: float, raw_basis: float,
+                          futures_px: float, spot_px: float, days_expiry: int):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO cme_basis
+                (date, annualized, raw_basis, futures_px, spot_px, days_expiry)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (today, annualized, raw_basis, futures_px, spot_px, days_expiry))
+        conn.commit()
+
+def query_basis_history(days: int) -> list:
+    with sqlite3.connect(DB_PATH) as conn:
+        return conn.execute("""
+            SELECT date, annualized FROM cme_basis
+            ORDER BY date DESC LIMIT ?
+        """, (days,)).fetchall()
 """
 BTC Decision Dashboard API.
 
@@ -95,6 +132,111 @@ init_db()
 init_history_db() 
 threading.Thread(target=_poll_oi, daemon=True).start()
 
+def fetch_cme_basis() -> dict:
+    try:
+        import yfinance as yf
+        fut  = yf.Ticker("BTC=F")
+        spot = yf.Ticker("BTC-USD")
+
+        fut_info  = fut.info
+        spot_info = spot.info
+
+        futures_px = fut_info.get("regularMarketPrice") or fut_info.get("previousClose")
+        spot_px    = spot_info.get("regularMarketPrice") or spot_info.get("previousClose")
+
+        if not futures_px or not spot_px:
+            return {"cme_basis": {"error": "price unavailable"}}
+
+        expiry_ts = fut_info.get("expireDate")
+        if expiry_ts:
+            expiry_dt   = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
+            days_to_exp = max((expiry_dt - datetime.now(timezone.utc)).days, 1)
+            annualized  = ((futures_px / spot_px) - 1) * (365 / days_to_exp) * 100
+        else:
+            days_to_exp = 30
+            annualized  = ((futures_px / spot_px) - 1) * 12 * 100
+
+        raw_basis = ((futures_px / spot_px) - 1) * 100
+
+        return {"cme_basis": {
+            "futures_px":  futures_px,
+            "spot_px":     spot_px,
+            "raw_basis":   raw_basis,
+            "annualized":  annualized,
+            "days_to_exp": days_to_exp,
+        }}
+    except Exception as e:
+        return {"cme_basis": {"error": str(e)}}
+
+def format_cme_basis(annualized: float, raw_basis: float, futures_px: float,
+                      spot_px: float, days_to_exp: int, **kwargs) -> dict:
+    # Persist today's snapshot
+    store_basis_snapshot(annualized, raw_basis, futures_px, spot_px, days_to_exp)
+
+    # 7d change
+    hist_7 = query_basis_history(7)
+    if len(hist_7) >= 2:
+        oldest   = hist_7[-1][1]
+        d7_delta = annualized - oldest
+        d7_str   = f"{d7_delta:+.1f}% vs {len(hist_7)-1}d ago"
+    else:
+        d7_str = "accumulating history"
+
+    # vs 30d avg
+    hist_30 = query_basis_history(30)
+    if len(hist_30) >= 5:
+        avg_30   = sum(r[1] for r in hist_30) / len(hist_30)
+        vs30_str = f"{annualized - avg_30:+.1f}% vs {avg_30:.1f}% 30d avg"
+    else:
+        avg_30   = annualized
+        vs30_str = "accumulating history"
+
+    # 90d percentile
+    hist_90 = query_basis_history(90)
+    values  = [r[1] for r in hist_90]
+    if len(values) >= 5:
+        pctl = round(sum(1 for v in values if v < annualized) / len(values) * 100)
+    else:
+        pctl = 50  # neutral until history builds
+
+    # Sparkline (last 10 readings, chronological)
+    spark = [r[1] for r in reversed(query_basis_history(10))]
+
+    # Alert thresholds
+    if annualized < 0:
+        alert       = "Backwardation — futures below spot"
+        alert_level = "extreme"
+        pattern     = "Backwardation — historically rare bearish futures structure"
+    elif annualized < 5:
+        alert       = "Basis compressed — carry trade unattractive"
+        alert_level = "notable"
+        pattern     = "Low contango — limited institutional carry demand"
+    elif annualized > 20:
+        alert       = "Extreme basis — cash/carry highly attractive"
+        alert_level = "extreme"
+        pattern     = f"Extreme contango — {days_to_exp}d to expiry · {raw_basis:.2f}% raw premium"
+    elif annualized > 15:
+        alert       = "Elevated basis — above normal carry premium"
+        alert_level = "notable"
+        pattern     = f"Strong contango — {days_to_exp}d to expiry · {raw_basis:.2f}% raw premium"
+    else:
+        alert       = "—"
+        alert_level = "none"
+        pattern     = f"Normal contango — {days_to_exp}d to expiry · {raw_basis:.2f}% raw premium"
+
+    return {
+        "name":        "CME Basis (Annualized)",
+        "category":    "Derivatives · Cash & Carry",
+        "current":     f"{annualized:+.2f}%",
+        "current_dir": "up" if annualized > 12 else "down" if annualized < 5 else "flat",
+        "d7":          d7_str,
+        "vs30d":       vs30_str,
+        "percentile":  pctl,
+        "alert":       alert,
+        "alert_level": alert_level,
+        "pattern":     pattern,
+        "spark":       spark,
+    }
 
 # ─── Mock fallbacks (Step 6 values) ───────────────────────────────────────
 # Used whenever a live API call returns None.
@@ -129,7 +271,9 @@ def get_metrics():
     cg = get_shared_coingecko()
     overrides = _load_overrides()
 
+   # FIXED
     netflow_raw  = fetch_exchange_netflow()
+    cme_raw      = fetch_cme_basis()                                 # fetch first
     realized_raw = fetch_realized_cap(chart=cg["chart"])
     funding_raw  = fetch_funding(markets=cg["derivatives"])
     oi_raw       = fetch_open_interest(markets=cg["derivatives"])
@@ -146,16 +290,17 @@ def get_metrics():
             return {**o, "_is_override": True}
         return formatter(**get(raw, mock_key))
 
-    return {
-        "etf_flow":         resolve("etf_flow",         format_etf_flow,         etf_raw,      "etf_flow"),
-        "funding":          resolve("funding",           format_funding,          funding_raw,  "funding"),
-        "open_interest":    resolve("open_interest",     format_open_interest,    oi_raw,       "open_interest"),
-        "exchange_netflow": resolve("exchange_netflow",  format_exchange_netflow, netflow_raw,  "exchange_netflow"),
-        "volume":           resolve("volume",            format_volume,           volume_raw,   "volume"),
-        "price_move":       resolve("price_move",        format_price_move,       price_raw,    "price_move"),
-        "realized_cap":     resolve("realized_cap",      format_realized_cap,     realized_raw, "realized_cap"),
-        "lth_supply":       resolve("lth_supply",        format_lth_supply,       lth_raw,      "lth_supply"),
-    }
+   return {
+    "etf_flow":         resolve("etf_flow",         format_etf_flow,         etf_raw,      "etf_flow"),
+    "funding":          resolve("funding",           format_funding,          funding_raw,  "funding"),
+    "open_interest":    resolve("open_interest",     format_open_interest,    oi_raw,       "open_interest"),
+    "exchange_netflow": resolve("exchange_netflow",  format_exchange_netflow, netflow_raw,  "exchange_netflow"),
+    "volume":           resolve("volume",            format_volume,           volume_raw,   "volume"),
+    "price_move":       resolve("price_move",        format_price_move,       price_raw,    "price_move"),
+    "realized_cap":     resolve("realized_cap",      format_realized_cap,     realized_raw, "realized_cap"),
+    "lth_supply":       resolve("lth_supply",        format_lth_supply,       lth_raw,      "lth_supply"),
+    "cme_basis":        format_cme_basis(**get(fetch_cme_basis(), "cme_basis")),  # ADD THIS
+}
 
 @app.get("/summary")
 def get_summary():
@@ -168,25 +313,26 @@ def get_summary():
     oi_raw       = fetch_open_interest(markets=cg["derivatives"])
     etf_raw      = fetch_etf_flow()
 
-    metrics = {
-        "funding":       format_funding(**get(funding_raw,       "funding")),
-        "open_interest": format_open_interest(**get(oi_raw,      "open_interest")),
-        "volume":        format_volume(**get(volume_raw,         "volume")),
-        "price_move":    format_price_move(**get(price_raw,      "price_move")),
-        "realized_cap":  format_realized_cap(**get(realized_raw, "realized_cap")),
-        "etf_flow":      format_etf_flow(**get(etf_raw,         "etf_flow")),
-    }
+   metrics = {
+    "funding":       format_funding(**get(funding_raw,       "funding")),
+    "open_interest": format_open_interest(**get(oi_raw,      "open_interest")),
+    "volume":        format_volume(**get(volume_raw,         "volume")),
+    "price_move":    format_price_move(**get(price_raw,      "price_move")),
+    "realized_cap":  format_realized_cap(**get(realized_raw, "realized_cap")),
+    "etf_flow":      format_etf_flow(**get(etf_raw,         "etf_flow")),
+    "cme_basis":     format_cme_basis(**get(fetch_cme_basis(), "cme_basis")),
+}
 
-    # ── Apply manual overrides so summary matches metric cards ──
-    for key, override in manual_overrides.items():
-        if key in metrics:
-            metrics[key] = {
-                **metrics[key],
-                "alert":       override.get("alert",       metrics[key].get("alert")),
-                "alert_level": override.get("alert_level", metrics[key].get("alert_level")),
-                "pattern":     override.get("pattern",     metrics[key].get("pattern")),
-                "current":     override.get("current",     metrics[key].get("current")),
-            }
+# Apply manual overrides so summary matches metric cards
+for key, override in _load_overrides().items():        # _load_overrides() not manual_overrides
+    if key in metrics:
+        metrics[key] = {
+            **metrics[key],
+            "alert":       override.get("alert",       metrics[key].get("alert")),
+            "alert_level": override.get("alert_level", metrics[key].get("alert_level")),
+            "pattern":     override.get("pattern",     metrics[key].get("pattern")),
+            "current":     override.get("current",     metrics[key].get("current")),
+        }
     # ───────────────────────────────────────────────────────────
 
     active_alerts = []
@@ -237,6 +383,7 @@ def get_causal():
     funding_raw  = fetch_funding(markets=cg["derivatives"])
     oi_raw       = fetch_open_interest(markets=cg["derivatives"])
     etf_raw      = fetch_etf_flow()
+    cme_raw      = fetch_cme_basis()
 
     metrics = {
         "funding":       format_funding(**get(funding_raw,       "funding")),
@@ -245,10 +392,11 @@ def get_causal():
         "price_move":    format_price_move(**get(price_raw,      "price_move")),
         "realized_cap":  format_realized_cap(**get(realized_raw, "realized_cap")),
         "etf_flow":      format_etf_flow(**get(etf_raw,         "etf_flow")),
+        "cme_basis":     format_cme_basis(**get(cme_raw,        "cme_basis")),
     }
 
-    # ── Apply manual overrides so causal chain matches metric cards ──
-    for key, override in manual_overrides.items():
+    # Apply manual overrides so causal chain matches metric cards
+    for key, override in _load_overrides().items():
         if key in metrics:
             metrics[key] = {
                 **metrics[key],
@@ -257,6 +405,57 @@ def get_causal():
                 "pattern":     override.get("pattern",     metrics[key].get("pattern")),
                 "current":     override.get("current",     metrics[key].get("current")),
             }
+
+    def weight_from_level(level: str) -> str:
+        return {"extreme": "extreme", "notable": "strong", "neutral": "moderate"}.get(level, "moderate")
+
+    def derive_state(m: dict) -> str:
+        alert   = m.get("alert",   "—")
+        pattern = m.get("pattern", "—")
+        current = m.get("current", "—")
+        if alert != "—":
+            base = alert.lower()
+            return f"{base} · {pattern.lower()}" if pattern != "—" else base
+        return pattern.lower() if pattern != "—" else f"at {current}"
+
+    chain = [
+        {
+            "label":  "ETF & institutional flow",
+            "state":  derive_state(metrics["etf_flow"]),
+            "weight": weight_from_level(metrics["etf_flow"]["alert_level"]),
+        },
+        {
+            "label":  "Price action",
+            "state":  derive_state(metrics["price_move"]),
+            "weight": weight_from_level(metrics["price_move"]["alert_level"]),
+        },
+        {
+            "label":  "Volume",
+            "state":  derive_state(metrics["volume"]),
+            "weight": weight_from_level(metrics["volume"]["alert_level"]),
+        },
+        {
+            "label":  "Funding",
+            "state":  derive_state(metrics["funding"]),
+            "weight": weight_from_level(metrics["funding"]["alert_level"]),
+        },
+        {
+            "label":  "Capital (realized cap)",
+            "state":  derive_state(metrics["realized_cap"]),
+            "weight": weight_from_level(metrics["realized_cap"]["alert_level"]),
+        },
+        {
+            "label":  "CME basis (cash & carry)",
+            "state":  derive_state(metrics["cme_basis"]),
+            "weight": weight_from_level(metrics["cme_basis"]["alert_level"]),
+        },
+    ]
+
+    return {
+        "chain":         chain,
+        "contradiction": _derive_contradiction(metrics),
+        "generated_at":  datetime.now(timezone.utc).isoformat(),
+    }
     # ────────────────────────────────────────────────────────────────
 
     def weight_from_level(level: str) -> str:
@@ -444,6 +643,7 @@ OVERRIDEABLE_METRICS = {
     "realized_cap",
     "funding",
     "open_interest",
+    "cme_basis",
 }
 
 class MetricOverride(BaseModel):
