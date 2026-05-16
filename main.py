@@ -235,6 +235,18 @@ def get_causal():
         "etf_flow":      format_etf_flow(**get(etf_raw,         "etf_flow")),
     }
 
+    # ── Apply manual overrides so causal chain matches metric cards ──
+    for key, override in manual_overrides.items():
+        if key in metrics:
+            metrics[key] = {
+                **metrics[key],
+                "alert":       override.get("alert",       metrics[key].get("alert")),
+                "alert_level": override.get("alert_level", metrics[key].get("alert_level")),
+                "pattern":     override.get("pattern",     metrics[key].get("pattern")),
+                "current":     override.get("current",     metrics[key].get("current")),
+            }
+    # ────────────────────────────────────────────────────────────────
+
     def weight_from_level(level: str) -> str:
         return {"extreme": "extreme", "notable": "strong", "neutral": "moderate"}.get(level, "moderate")
 
