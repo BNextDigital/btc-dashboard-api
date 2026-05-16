@@ -271,36 +271,34 @@ def get_metrics():
     cg = get_shared_coingecko()
     overrides = _load_overrides()
 
-   # FIXED
-    netflow_raw  = fetch_exchange_netflow()
-    cme_raw      = fetch_cme_basis()                                 # fetch first
-    realized_raw = fetch_realized_cap(chart=cg["chart"])
-    funding_raw  = fetch_funding(markets=cg["derivatives"])
-    oi_raw       = fetch_open_interest(markets=cg["derivatives"])
-    etf_raw      = fetch_etf_flow()
-    lth_raw      = fetch_lth_supply()
+    netflow_raw           = fetch_exchange_netflow()
+    cme_raw               = fetch_cme_basis()
+    realized_raw          = fetch_realized_cap(chart=cg["chart"])
+    funding_raw           = fetch_funding(markets=cg["derivatives"])
+    oi_raw                = fetch_open_interest(markets=cg["derivatives"])
+    etf_raw               = fetch_etf_flow()
+    lth_raw               = fetch_lth_supply()
     price_raw, volume_raw = fetch_price_and_volume(
         chart=cg["chart"], ohlcv=cg["ohlcv"]
     )
 
     def resolve(key, formatter, raw, mock_key):
-        """Use manual override if present, otherwise API/mock."""
         if key in overrides:
             o = overrides[key]
             return {**o, "_is_override": True}
         return formatter(**get(raw, mock_key))
 
-   return {
-    "etf_flow":         resolve("etf_flow",         format_etf_flow,         etf_raw,      "etf_flow"),
-    "funding":          resolve("funding",           format_funding,          funding_raw,  "funding"),
-    "open_interest":    resolve("open_interest",     format_open_interest,    oi_raw,       "open_interest"),
-    "exchange_netflow": resolve("exchange_netflow",  format_exchange_netflow, netflow_raw,  "exchange_netflow"),
-    "volume":           resolve("volume",            format_volume,           volume_raw,   "volume"),
-    "price_move":       resolve("price_move",        format_price_move,       price_raw,    "price_move"),
-    "realized_cap":     resolve("realized_cap",      format_realized_cap,     realized_raw, "realized_cap"),
-    "lth_supply":       resolve("lth_supply",        format_lth_supply,       lth_raw,      "lth_supply"),
-    "cme_basis":        format_cme_basis(**get(fetch_cme_basis(), "cme_basis")),  # ADD THIS
-}
+    return {
+        "etf_flow":         resolve("etf_flow",         format_etf_flow,         etf_raw,      "etf_flow"),
+        "funding":          resolve("funding",           format_funding,          funding_raw,  "funding"),
+        "open_interest":    resolve("open_interest",     format_open_interest,    oi_raw,       "open_interest"),
+        "exchange_netflow": resolve("exchange_netflow",  format_exchange_netflow, netflow_raw,  "exchange_netflow"),
+        "volume":           resolve("volume",            format_volume,           volume_raw,   "volume"),
+        "price_move":       resolve("price_move",        format_price_move,       price_raw,    "price_move"),
+        "realized_cap":     resolve("realized_cap",      format_realized_cap,     realized_raw, "realized_cap"),
+        "lth_supply":       resolve("lth_supply",        format_lth_supply,       lth_raw,      "lth_supply"),
+        "cme_basis":        format_cme_basis(**get(cme_raw, "cme_basis")),
+    }
 
 @app.get("/summary")
 def get_summary():
