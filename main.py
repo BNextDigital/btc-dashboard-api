@@ -177,6 +177,18 @@ def get_summary():
         "etf_flow":      format_etf_flow(**get(etf_raw,         "etf_flow")),
     }
 
+    # ── Apply manual overrides so summary matches metric cards ──
+    for key, override in manual_overrides.items():
+        if key in metrics:
+            metrics[key] = {
+                **metrics[key],
+                "alert":       override.get("alert",       metrics[key].get("alert")),
+                "alert_level": override.get("alert_level", metrics[key].get("alert_level")),
+                "pattern":     override.get("pattern",     metrics[key].get("pattern")),
+                "current":     override.get("current",     metrics[key].get("current")),
+            }
+    # ───────────────────────────────────────────────────────────
+
     active_alerts = []
     for metric_id, m in metrics.items():
         if m["alert"] != "—" and m["alert_level"] != "none":
