@@ -262,6 +262,7 @@ MOCK = {
     "price_move":       dict(daily_change_pct=0.052, week_change_pct=0.088, avg_daily_30d=0.031, percentile_90d=80),
     "realized_cap":     dict(growth_pct=0.028, growth_7d_pct=0.019, avg_30d_pct=0.006, percentile_90d=76),
     "lth_supply":       dict(change_7d_btc=45_000, change_30d_btc=120_000, change_30d_pct=0.008, percentile_90d=72),
+    "cme_basis":        dict(annualized=8.5, raw_basis=0.35, futures_px=95000.0, spot_px=94667.0, days_to_exp=30),
 }
 
 
@@ -367,7 +368,7 @@ def _apply_overrides(metrics: dict) -> dict:
 def _build_metrics(cg: dict) -> dict:
     """Fetch and format all metrics. Used by /metrics, /summary, /causal."""
     netflow_raw           = fetch_exchange_netflow()
-    cme_raw               = fetch_cme_basis()
+    cme_raw               = fetch_cme_basis().get("cme_basis")
     realized_raw          = fetch_realized_cap(chart=cg["chart"])
     funding_raw           = fetch_funding(markets=cg["derivatives"])
     oi_raw                = fetch_open_interest(markets=cg["derivatives"])
