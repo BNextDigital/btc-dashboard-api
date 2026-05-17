@@ -548,7 +548,7 @@ def _build_metrics(cg: dict) -> dict:
     lth_raw               = fetch_lth_supply()
     price_raw, volume_raw = fetch_price_and_volume(
         chart=cg["chart"], ohlcv=cg["ohlcv"])
-    stablecoin_raw = fetch_stablecoin_supply()
+    stablecoin_raw = fetch_stablecoin_supply().get("stablecoin_supply")
     return {
         "etf_flow":         format_etf_flow(**get(etf_raw,      "etf_flow")),
         "funding":          format_funding(**get(funding_raw,    "funding")),
