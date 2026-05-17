@@ -688,9 +688,11 @@ def _apply_overrides(metrics: dict) -> dict:
 
 def _build_metrics(cg: dict) -> dict:
     """Fetch and format all metrics. Used by /metrics, /summary, /causal."""
-    netflow_raw           = fetch_exchange_netflow()
+   # netflow_raw           = fetch_exchange_netflow()
+    netflow_raw           = None
+    realized_raw          = None
     cme_raw               = fetch_cme_basis().get("cme_basis")
-    realized_raw          = fetch_realized_cap(chart=cg["chart"])
+   # realized_raw          = fetch_realized_cap(chart=cg["chart"])
     funding_raw           = fetch_funding(markets=cg["derivatives"])
     oi_raw                = fetch_open_interest(markets=cg["derivatives"])
     etf_raw               = fetch_etf_flow()
