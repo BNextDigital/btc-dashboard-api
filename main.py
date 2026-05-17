@@ -7,6 +7,8 @@ import os
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
+import numpy as np
+import pandas as pd
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -564,6 +566,140 @@ def format_btc_dominance(dominance_pct: float, btc_market_cap: float, total_mark
         "dominance_pct":   round(dominance_pct, 2),
     }
 
+# ─── Crypto Proxy Stocks ───────────────────────────────────────────────────
+
+PROXY_TICKERS = {
+    "MSTR": "Strategy",
+    "COIN": "Coinbase",
+    "HOOD": "Robinhood",
+    "XYZ":  "Block",
+    "PYPL": "PayPal",
+}
+
+_proxy_cache: dict = {"data": None, "ts": 0.0}
+PROXY_CACHE_TTL   = 300  # 5 minutes — yfinance calls are slow
+
+
+def _pearson(a: np.ndarray, b: np.ndarray) -> float:
+    n = min(len(a), len(b))
+    if n < 3:
+        return 0.0
+    try:
+        return float(np.corrcoef(a[-n:], b[-n:])[0, 1])
+    except Exception:
+        return 0.0
+
+
+def _cross_corr_lag(stock: np.ndarray, btc: np.ndarray, max_lag: int = 5) -> tuple[int, float]:
+    """Returns (best_lag, best_corr). Positive lag = stock lags BTC."""
+    best_lag, best_corr = 0, _pearson(stock, btc)
+    for lag in range(-max_lag, max_lag + 1):
+        if lag == 0:
+            continue
+        if lag > 0:
+            s, b = stock[lag:], btc[:-lag]
+        else:
+            s, b = stock[:lag], btc[-lag:]
+        c = _pearson(s, b)
+        if abs(c) > abs(best_corr):
+            best_corr, best_lag = c, lag
+    return best_lag, best_corr
+
+
+def fetch_crypto_proxies() -> dict:
+    now = time.time()
+    if _proxy_cache["data"] and now - _proxy_cache["ts"] < PROXY_CACHE_TTL:
+        return _proxy_cache["data"]
+
+    try:
+        import yfinance as yf
+
+        # Fetch closes individually — more reliable than multi-ticker download
+        closes: dict[str, pd.Series] = {}
+        all_tickers = list(PROXY_TICKERS.keys()) + ["BTC-USD"]
+
+        for ticker in all_tickers:
+            hist = yf.Ticker(ticker).history(period="6mo", interval="1d")
+            if not hist.empty:
+                closes[ticker] = hist["Close"]
+
+        if "BTC-USD" not in closes:
+            return {"crypto_proxies": None}
+
+        btc_close   = closes["BTC-USD"]
+        btc_returns = btc_close.pct_change().dropna().values
+
+        results = {}
+        for ticker, name in PROXY_TICKERS.items():
+            if ticker not in closes:
+                continue
+
+            sc  = closes[ticker]
+            ret = sc.pct_change().dropna().values
+
+            # Price change
+            p0      = float(sc.iloc[-1])
+            p1d     = float(sc.iloc[-2])  if len(sc) >= 2  else p0
+            p7d     = float(sc.iloc[-8])  if len(sc) >= 8  else float(sc.iloc[0])
+            ch_1d   = (p0 / p1d  - 1) * 100
+            ch_7d   = (p0 / p7d  - 1) * 100
+
+            # Correlations
+            corr_7d  = _pearson(ret[-7:],  btc_returns[-7:])
+            corr_30d = _pearson(ret[-30:], btc_returns[-30:])
+            corr_90d = _pearson(ret[-90:], btc_returns[-90:])
+
+            # Lead / lag (based on 30d window)
+            lag, _ = _cross_corr_lag(ret[-30:], btc_returns[-30:])
+
+            if abs(lag) <= 1:
+                lead_lag_label = "Lockstep"
+            elif lag > 0:
+                lead_lag_label = f"Lags BTC ~{lag}d"
+            else:
+                lead_lag_label = f"Leads BTC ~{abs(lag)}d"
+
+            # Regime label
+            c = abs(corr_30d)
+            regime = (
+                "Lockstep"      if c >= 0.80 else
+                "Strong"        if c >= 0.65 else
+                "Moderate"      if c >= 0.45 else
+                "Weak"          if c >= 0.20 else
+                "Decorrelated"
+            )
+
+            # Sparkline — last 30 days, normalised to start = 0
+            recent = sc.iloc[-30:].values
+            base   = recent[0] if recent[0] != 0 else 1
+            spark  = [round(float(v / base * 100 - 100), 2) for v in recent]
+
+            results[ticker] = {
+                "ticker":          ticker,
+                "name":            name,
+                "price":           f"${p0:,.2f}",
+                "change_1d":       f"{ch_1d:+.2f}%",
+                "change_7d":       f"{ch_7d:+.2f}%",
+                "change_1d_raw":   round(ch_1d, 2),
+                "change_7d_raw":   round(ch_7d, 2),
+                "corr_7d":         round(corr_7d,  3),
+                "corr_30d":        round(corr_30d, 3),
+                "corr_90d":        round(corr_90d, 3),
+                "lead_lag_label":  lead_lag_label,
+                "lead_lag_days":   lag,
+                "regime":          regime,
+                "spark":           spark,
+            }
+
+        result = {"crypto_proxies": results}
+        _proxy_cache["data"] = result
+        _proxy_cache["ts"]   = now
+        return result
+
+    except Exception as e:
+        print(f"[crypto_proxies] fetch error: {e}")
+        return {"crypto_proxies": None}
+
 # ─── Mock fallbacks ────────────────────────────────────────────────────────
 
 MOCK = {
@@ -892,6 +1028,18 @@ def get_news():
     if not news:
         return {"items": [{"title": "No recent BTC news found", "source": "—", "time": "—", "tag": "—", "url": "#"}]}
     return {"items": news}
+
+@app.get("/crypto-proxies")
+def get_crypto_proxies():
+    """
+    Returns price, 7d/30d/90d BTC correlation, and lead/lag
+    for the 5 S&P 500 crypto-exposed stocks.
+    Cached for 5 minutes — yfinance calls are slow.
+    """
+    result = fetch_crypto_proxies()
+    if not result.get("crypto_proxies"):
+        return {"error": "Could not fetch proxy stock data", "stocks": {}}
+    return result
 
 
 # ─── Contradiction engine ──────────────────────────────────────────────────
