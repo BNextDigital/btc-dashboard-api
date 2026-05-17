@@ -108,6 +108,41 @@ def query_basis_history(days: int) -> list:
 
 init_basis_db()
 
+STABLECOIN_DB_PATH = Path("stablecoin_history.db")
+
+def init_stablecoin_db():
+    with sqlite3.connect(STABLECOIN_DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS stablecoin_supply (
+                date         TEXT PRIMARY KEY,
+                usdt_supply  REAL,
+                usdc_supply  REAL,
+                total_supply REAL
+            )
+        """)
+        conn.commit()
+
+def store_stablecoin_snapshot(usdt: float, usdc: float):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    total = usdt + usdc
+    with sqlite3.connect(STABLECOIN_DB_PATH) as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO stablecoin_supply
+               (date, usdt_supply, usdc_supply, total_supply)
+               VALUES (?, ?, ?, ?)""",
+            (today, usdt, usdc, total),
+        )
+        conn.commit()
+
+def query_stablecoin_history(days: int) -> list:
+    with sqlite3.connect(STABLECOIN_DB_PATH) as conn:
+        return conn.execute(
+            """SELECT date, usdt_supply, usdc_supply, total_supply
+               FROM stablecoin_supply ORDER BY date DESC LIMIT ?""",
+            (days,),
+        ).fetchall()
+
+init_stablecoin_db()
 
 # ─── CME Basis — fetch & format ────────────────────────────────────────────
 
@@ -250,6 +285,139 @@ init_db()
 init_history_db()
 threading.Thread(target=_poll_oi, daemon=True).start()
 
+def fetch_stablecoin_supply() -> dict:
+    try:
+        data = _cached_get(
+            f"{COINGECKO_BASE}/simple/price",
+            _coingecko_headers(),
+            {
+                "ids":               "tether,usd-coin",
+                "vs_currencies":     "usd",
+                "include_market_cap": "true",
+            },
+        )
+        if not data:
+            return {"stablecoin_supply": None}
+
+        usdt = data.get("tether",   {}).get("usd_market_cap", 0)
+        usdc = data.get("usd-coin", {}).get("usd_market_cap", 0)
+
+        if not usdt and not usdc:
+            return {"stablecoin_supply": None}
+
+        return {"stablecoin_supply": {"usdt": usdt, "usdc": usdc}}
+    except Exception as e:
+        print(f"[stablecoin] fetch error: {e}")
+        return {"stablecoin_supply": None}
+
+def _fmt_billions(v: float) -> str:
+    if v >= 1_000_000_000_000:
+        return f"${v / 1_000_000_000_000:.2f}T"
+    return f"${v / 1_000_000_000:.1f}B"
+
+def format_stablecoin_supply(usdt: float, usdc: float, **kwargs) -> dict:
+    total = usdt + usdc
+    store_stablecoin_snapshot(usdt, usdc)
+
+    # History
+    hist_7  = query_stablecoin_history(7)
+    hist_30 = query_stablecoin_history(30)
+    hist_90 = query_stablecoin_history(90)
+
+    # 7d change
+    if len(hist_7) >= 2:
+        oldest_total = hist_7[-1][3]
+        d7_delta     = total - oldest_total
+        d7_pct       = (d7_delta / oldest_total * 100) if oldest_total else 0
+        d7_str       = f"{_fmt_billions(abs(d7_delta))} ({d7_pct:+.1f}%) vs {len(hist_7)-1}d ago"
+        d7_str       = ("+" if d7_delta >= 0 else "-") + d7_str
+    else:
+        d7_delta = 0
+        d7_pct   = 0
+        d7_str   = "accumulating history"
+
+    # vs 30d avg
+    if len(hist_30) >= 5:
+        avg_30   = sum(r[3] for r in hist_30) / len(hist_30)
+        vs30_delta = total - avg_30
+        vs30_pct   = (vs30_delta / avg_30 * 100) if avg_30 else 0
+        vs30_str   = f"{vs30_pct:+.1f}% vs {_fmt_billions(avg_30)} 30d avg"
+    else:
+        avg_30   = total
+        vs30_str = "accumulating history"
+
+    # 90d percentile
+    totals_90 = [r[3] for r in hist_90]
+    if len(totals_90) >= 5:
+        pctl = round(sum(1 for v in totals_90 if v < total) / len(totals_90) * 100)
+    else:
+        pctl = 50
+
+    # Sparkline (last 10, chronological)
+    spark = [r[3] / 1e9 for r in reversed(query_stablecoin_history(10))]
+
+    # Individual 7d changes
+    if len(hist_7) >= 2:
+        usdt_7d_delta = usdt - hist_7[-1][1]
+        usdc_7d_delta = usdc - hist_7[-1][2]
+        usdt_7d_str   = f"{'+' if usdt_7d_delta >= 0 else ''}{_fmt_billions(abs(usdt_7d_delta))}"
+        usdc_7d_str   = f"{'+' if usdc_7d_delta >= 0 else ''}{_fmt_billions(abs(usdc_7d_delta))}"
+    else:
+        usdt_7d_str = "—"
+        usdc_7d_str = "—"
+
+    # Alert thresholds (based on 7d % change)
+    if d7_pct > 10:
+        alert       = "Rapid liquidity expansion — strong capital staging"
+        alert_level = "extreme"
+        pattern     = f"7d +{d7_pct:.1f}% — aggressive stablecoin minting, capital entering crypto"
+    elif d7_pct > 5:
+        alert       = "Liquidity expanding — capital staging into crypto"
+        alert_level = "notable"
+        pattern     = f"7d +{d7_pct:.1f}% — above-normal stablecoin growth, bullish liquidity backdrop"
+    elif d7_pct < -10:
+        alert       = "Rapid liquidity contraction — capital exiting or deploying"
+        alert_level = "extreme"
+        pattern     = f"7d {d7_pct:.1f}% — large stablecoin burn, capital rotating out or into BTC"
+    elif d7_pct < -5:
+        alert       = "Liquidity contracting — deployment or outflow signal"
+        alert_level = "notable"
+        pattern     = f"7d {d7_pct:.1f}% — stablecoin supply shrinking, watch for direction"
+    elif pctl >= 90:
+        alert       = "Supply at 90d high — peak dry powder"
+        alert_level = "notable"
+        pattern     = "Maximum liquidity available — historically precedes deployment into risk assets"
+    else:
+        alert       = "—"
+        alert_level = "none"
+        pattern     = "Stable supply — neutral liquidity backdrop"
+
+    usdt_share = round(usdt / total * 100, 1) if total else 0
+    usdc_share = round(usdc / total * 100, 1) if total else 0
+
+    return {
+        "name":        "Stablecoin Supply",
+        "category":    "Liquidity · USDT + USDC",
+        "current":     _fmt_billions(total),
+        "current_dir": "up" if d7_delta > 0 else "down" if d7_delta < 0 else "flat",
+        "d7":          d7_str,
+        "vs30d":       vs30_str,
+        "percentile":  pctl,
+        "alert":       alert,
+        "alert_level": alert_level,
+        "pattern":     pattern,
+        "spark":       spark,
+        # Breakdown fields for frontend card
+        "usdt":        _fmt_billions(usdt),
+        "usdc":        _fmt_billions(usdc),
+        "usdt_raw":    usdt,
+        "usdc_raw":    usdc,
+        "usdt_share":  usdt_share,
+        "usdc_share":  usdc_share,
+        "usdt_7d":     usdt_7d_str,
+        "usdc_7d":     usdc_7d_str,
+    }
+
 
 # ─── Mock fallbacks ────────────────────────────────────────────────────────
 
@@ -263,6 +431,7 @@ MOCK = {
     "realized_cap":     dict(growth_pct=0.028, growth_7d_pct=0.019, avg_30d_pct=0.006, percentile_90d=76),
     "lth_supply":       dict(change_7d_btc=45_000, change_30d_btc=120_000, change_30d_pct=0.008, percentile_90d=72),
     "cme_basis":        dict(annualized=8.5, raw_basis=0.35, futures_px=95000.0, spot_px=94667.0, days_to_exp=30),
+    "stablecoin_supply": dict(usdt=143_000_000_000, usdc=60_000_000_000),
 }
 
 
@@ -286,6 +455,7 @@ OVERRIDEABLE_METRICS = {
     "funding",
     "open_interest",
     "cme_basis",
+    "stablecoin_supply",
 }
 
 
@@ -323,6 +493,7 @@ def _metric_display_name(metric: str) -> str:
         "funding":          "Funding",
         "open_interest":    "Open Interest",
         "cme_basis":        "CME Basis (Annualized)",
+        "stablecoin_supply": "Stablecoin Supply",   # display name
     }.get(metric, metric)
 
 
@@ -335,6 +506,7 @@ def _metric_category(metric: str) -> str:
         "funding":          "Derivatives",
         "open_interest":    "Derivatives",
         "cme_basis":        "Derivatives · Cash & Carry",
+        "stablecoin_supply": "Liquidity",           # category
     }.get(metric, "—")
 
 
@@ -375,8 +547,8 @@ def _build_metrics(cg: dict) -> dict:
     etf_raw               = fetch_etf_flow()
     lth_raw               = fetch_lth_supply()
     price_raw, volume_raw = fetch_price_and_volume(
-        chart=cg["chart"], ohlcv=cg["ohlcv"]
-    )
+        chart=cg["chart"], ohlcv=cg["ohlcv"])
+    stablecoin_raw = fetch_stablecoin_supply()
     return {
         "etf_flow":         format_etf_flow(**get(etf_raw,      "etf_flow")),
         "funding":          format_funding(**get(funding_raw,    "funding")),
@@ -387,6 +559,7 @@ def _build_metrics(cg: dict) -> dict:
         "realized_cap":     format_realized_cap(**get(realized_raw, "realized_cap")),
         "lth_supply":       format_lth_supply(**get(lth_raw,    "lth_supply")),
         "cme_basis":        format_cme_basis(**get(cme_raw,     "cme_basis")),
+        "stablecoin_supply": format_stablecoin_supply(**get(stablecoin_raw, "stablecoin_supply")),
     }
 
 
@@ -501,6 +674,11 @@ def get_causal():
             "label":  "CME basis (cash & carry)",
             "state":  derive_state(metrics["cme_basis"]),
             "weight": weight_from_level(metrics["cme_basis"]["alert_level"]),
+        },
+        {
+            "label":  "Stablecoin liquidity (USDT + USDC)",
+            "state":  derive_state(metrics["stablecoin_supply"]),
+            "weight": weight_from_level(metrics["stablecoin_supply"]["alert_level"]),
         },
     ]
 
