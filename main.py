@@ -144,6 +144,41 @@ def query_stablecoin_history(days: int) -> list:
 
 init_stablecoin_db()
 
+DOMINANCE_DB_PATH = Path("btc_dominance_history.db")
+
+def init_dominance_db():
+    with sqlite3.connect(DOMINANCE_DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS btc_dominance (
+                date             TEXT PRIMARY KEY,
+                dominance_pct    REAL,
+                btc_market_cap   REAL,
+                total_market_cap REAL
+            )
+        """)
+        conn.commit()
+
+def store_dominance_snapshot(dominance_pct: float, btc_cap: float, total_cap: float):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with sqlite3.connect(DOMINANCE_DB_PATH) as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO btc_dominance
+               (date, dominance_pct, btc_market_cap, total_market_cap)
+               VALUES (?, ?, ?, ?)""",
+            (today, dominance_pct, btc_cap, total_cap),
+        )
+        conn.commit()
+
+def query_dominance_history(days: int) -> list:
+    with sqlite3.connect(DOMINANCE_DB_PATH) as conn:
+        return conn.execute(
+            """SELECT date, dominance_pct, btc_market_cap, total_market_cap
+               FROM btc_dominance ORDER BY date DESC LIMIT ?""",
+            (days,),
+        ).fetchall()
+
+init_dominance_db()
+
 # ─── CME Basis — fetch & format ────────────────────────────────────────────
 
 def fetch_cme_basis() -> dict:
@@ -418,6 +453,116 @@ def format_stablecoin_supply(usdt: float, usdc: float, **kwargs) -> dict:
         "usdc_7d":     usdc_7d_str,
     }
 
+def fetch_btc_dominance() -> dict:
+    try:
+        data = _cached_get(
+            f"{COINGECKO_BASE}/global",
+            _coingecko_headers(),
+            {},
+        )
+        if not data or "data" not in data:
+            return {"btc_dominance": None}
+
+        gd              = data["data"]
+        dominance_pct   = gd.get("market_cap_percentage", {}).get("btc", 0)
+        total_cap       = gd.get("total_market_cap", {}).get("usd", 0)
+        btc_cap         = total_cap * (dominance_pct / 100) if total_cap else 0
+
+        return {"btc_dominance": {
+            "dominance_pct":   dominance_pct,
+            "btc_market_cap":  btc_cap,
+            "total_market_cap": total_cap,
+        }}
+    except Exception as e:
+        print(f"[btc_dominance] fetch error: {e}")
+        return {"btc_dominance": None}
+
+def format_btc_dominance(dominance_pct: float, btc_market_cap: float, total_market_cap: float, **kwargs) -> dict:
+    store_dominance_snapshot(dominance_pct, btc_market_cap, total_market_cap)
+
+    alt_cap     = total_market_cap - btc_market_cap
+    alt_share   = round(100 - dominance_pct, 1)
+    btc_share   = round(dominance_pct, 1)
+
+    # 7d change
+    hist_7 = query_dominance_history(7)
+    if len(hist_7) >= 2:
+        oldest   = hist_7[-1][1]
+        d7_delta = dominance_pct - oldest
+        d7_str   = f"{d7_delta:+.2f}pp vs {len(hist_7)-1}d ago"
+    else:
+        d7_delta = 0
+        d7_str   = "accumulating history"
+
+    # vs 30d avg
+    hist_30 = query_dominance_history(30)
+    if len(hist_30) >= 5:
+        avg_30   = sum(r[1] for r in hist_30) / len(hist_30)
+        vs30_str = f"{dominance_pct - avg_30:+.2f}pp vs {avg_30:.1f}% avg"
+    else:
+        avg_30   = dominance_pct
+        vs30_str = "accumulating history"
+
+    # 90d percentile
+    hist_90 = query_dominance_history(90)
+    values  = [r[1] for r in hist_90]
+    if len(values) >= 5:
+        pctl = round(sum(1 for v in values if v < dominance_pct) / len(values) * 100)
+    else:
+        pctl = 50
+
+    # Sparkline
+    spark = [r[1] for r in reversed(query_dominance_history(10))]
+
+    # Alert thresholds
+    if dominance_pct >= 70:
+        alert       = "Extreme dominance — capital consolidating in BTC"
+        alert_level = "extreme"
+        pattern     = f"{dominance_pct:.1f}% — historically precedes major altcoin distribution or BTC local top"
+    elif dominance_pct >= 60:
+        alert       = "Elevated dominance — altcoin season unlikely near-term"
+        alert_level = "notable"
+        pattern     = f"{dominance_pct:.1f}% — BTC capturing majority of new capital inflow"
+    elif dominance_pct <= 40:
+        alert       = "Extreme low dominance — peak altcoin season conditions"
+        alert_level = "extreme"
+        pattern     = f"{dominance_pct:.1f}% — capital heavily rotated into alts, BTC lagging"
+    elif dominance_pct <= 50:
+        alert       = "Low dominance — altcoin season conditions forming"
+        alert_level = "notable"
+        pattern     = f"{dominance_pct:.1f}% — capital rotating from BTC to altcoins"
+    else:
+        alert       = "—"
+        alert_level = "none"
+        pattern     = f"{dominance_pct:.1f}% — neutral zone, no strong rotation signal"
+
+    # Rising/falling direction
+    if d7_delta > 0.5:
+        dir_ = "up"
+    elif d7_delta < -0.5:
+        dir_ = "down"
+    else:
+        dir_ = "flat"
+
+    return {
+        "name":            "BTC Dominance",
+        "category":        "Market Structure · USD",
+        "current":         f"{dominance_pct:.2f}%",
+        "current_dir":     dir_,
+        "d7":              d7_str,
+        "vs30d":           vs30_str,
+        "percentile":      pctl,
+        "alert":           alert,
+        "alert_level":     alert_level,
+        "pattern":         pattern,
+        "spark":           spark,
+        "btc_cap":         _fmt_billions(btc_market_cap),
+        "alt_cap":         _fmt_billions(alt_cap),
+        "total_cap":       _fmt_billions(total_market_cap),
+        "btc_share":       btc_share,
+        "alt_share":       alt_share,
+        "dominance_pct":   round(dominance_pct, 2),
+    }
 
 # ─── Mock fallbacks ────────────────────────────────────────────────────────
 
@@ -432,6 +577,7 @@ MOCK = {
     "lth_supply":       dict(change_7d_btc=45_000, change_30d_btc=120_000, change_30d_pct=0.008, percentile_90d=72),
     "cme_basis":        dict(annualized=8.5, raw_basis=0.35, futures_px=95000.0, spot_px=94667.0, days_to_exp=30),
     "stablecoin_supply": dict(usdt=143_000_000_000, usdc=60_000_000_000),
+    "btc_dominance": dict(dominance_pct=62.5, btc_market_cap=1_850_000_000_000, total_market_cap=2_960_000_000_000),
 }
 
 
@@ -456,6 +602,7 @@ OVERRIDEABLE_METRICS = {
     "open_interest",
     "cme_basis",
     "stablecoin_supply",
+    "btc_dominance",
 }
 
 
@@ -494,6 +641,7 @@ def _metric_display_name(metric: str) -> str:
         "open_interest":    "Open Interest",
         "cme_basis":        "CME Basis (Annualized)",
         "stablecoin_supply": "Stablecoin Supply",   # display name
+        "btc_dominance": "BTC Dominance",
     }.get(metric, metric)
 
 
@@ -506,7 +654,8 @@ def _metric_category(metric: str) -> str:
         "funding":          "Derivatives",
         "open_interest":    "Derivatives",
         "cme_basis":        "Derivatives · Cash & Carry",
-        "stablecoin_supply": "Liquidity",           # category
+        "stablecoin_supply": "Liquidity",  
+        "btc_dominance": "Market Structure",# category
     }.get(metric, "—")
 
 
@@ -549,6 +698,8 @@ def _build_metrics(cg: dict) -> dict:
     price_raw, volume_raw = fetch_price_and_volume(
         chart=cg["chart"], ohlcv=cg["ohlcv"])
     stablecoin_raw = fetch_stablecoin_supply().get("stablecoin_supply")
+    dominance_raw = fetch_btc_dominance().get("btc_dominance")
+
     return {
         "etf_flow":         format_etf_flow(**get(etf_raw,      "etf_flow")),
         "funding":          format_funding(**get(funding_raw,    "funding")),
@@ -560,6 +711,7 @@ def _build_metrics(cg: dict) -> dict:
         "lth_supply":       format_lth_supply(**get(lth_raw,    "lth_supply")),
         "cme_basis":        format_cme_basis(**get(cme_raw,     "cme_basis")),
         "stablecoin_supply": format_stablecoin_supply(**get(stablecoin_raw, "stablecoin_supply")),
+        "btc_dominance": format_btc_dominance(**get(dominance_raw, "btc_dominance")),
     }
 
 
@@ -679,6 +831,11 @@ def get_causal():
             "label":  "Stablecoin liquidity (USDT + USDC)",
             "state":  derive_state(metrics["stablecoin_supply"]),
             "weight": weight_from_level(metrics["stablecoin_supply"]["alert_level"]),
+        },
+        {
+            "label":  "BTC dominance",
+            "state":  derive_state(metrics["btc_dominance"]),
+            "weight": weight_from_level(metrics["btc_dominance"]["alert_level"]),
         },
     ]
 
