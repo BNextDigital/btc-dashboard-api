@@ -873,6 +873,138 @@ def get_metrics():
 
     return {key: resolve(key) for key in metrics}
 
+@app.get("/metrics/history")
+def get_metrics_history(date: str):
+    """
+    Returns metric snapshot for a specific date from all SQLite stores.
+    Covers: manual history, CME basis, stablecoin supply, BTC dominance.
+    """
+    result = {}
+
+    # ── 1. Manual history (netflow, LTH, ETF, realized cap, funding, OI) ──
+    for metric in ["exchange_netflow", "lth_supply", "etf_flow",
+                   "realized_cap", "funding", "open_interest"]:
+        entry = get_entry(metric, date)
+        if entry:
+            result[metric] = {
+                "name":           _metric_display_name(metric),
+                "category":       _metric_category(metric),
+                "current":        entry.get("current", "—"),
+                "current_dir":    _infer_direction(entry.get("current", "")),
+                "d7":             entry.get("d7", "—"),
+                "vs30d":          entry.get("vs30d", "—"),
+                "percentile":     entry.get("percentile", 0),
+                "alert":          entry.get("alert", "—"),
+                "alert_level":    _classify_alert_level(entry.get("alert", "—")),
+                "pattern":        entry.get("pattern", "—"),
+                "source":         entry.get("source", "—"),
+                "spark":          [],
+                "_is_historical": True,
+                "_date":          date,
+            }
+
+    # ── 2. CME Basis ────────────────────────────────────────────────────────
+    # Schema: date, annualized, raw_basis, futures_px, spot_px, days_expiry
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT * FROM cme_basis WHERE date = ?", (date,)
+        ).fetchone()
+    if row:
+        annualized, raw_basis, futures_px, spot_px, days_exp = row[1], row[2], row[3], row[4], row[5]
+        result["cme_basis"] = {
+            "name":           "CME Basis (Annualized)",
+            "category":       "Derivatives · Cash & Carry",
+            "current":        f"{annualized:+.2f}%",
+            "current_dir":    "up" if annualized > 12 else "down" if annualized < 5 else "flat",
+            "d7":             "—",
+            "vs30d":          "—",
+            "percentile":     0,
+            "alert":          "—",
+            "alert_level":    "none",
+            "pattern":        f"{days_exp}d to expiry · {raw_basis:.2f}% raw premium",
+            "spark":          [],
+            "futures_px":     round(futures_px, 2),
+            "spot_px":        round(spot_px, 2),
+            "raw_basis":      round(raw_basis, 4),
+            "days_to_exp":    days_exp,
+            "_is_historical": True,
+            "_date":          date,
+        }
+
+    # ── 3. Stablecoin Supply ────────────────────────────────────────────────
+    # Schema: date, usdt_supply, usdc_supply, total_supply
+    with sqlite3.connect(STABLECOIN_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT * FROM stablecoin_supply WHERE date = ?", (date,)
+        ).fetchone()
+    if row:
+        usdt, usdc, total = row[1], row[2], row[3]
+        result["stablecoin_supply"] = {
+            "name":           "Stablecoin Supply",
+            "category":       "Liquidity · USDT + USDC",
+            "current":        _fmt_billions(total),
+            "current_dir":    "flat",
+            "d7":             "—",
+            "vs30d":          "—",
+            "percentile":     0,
+            "alert":          "—",
+            "alert_level":    "none",
+            "pattern":        f"USDT {_fmt_billions(usdt)} · USDC {_fmt_billions(usdc)}",
+            "spark":          [],
+            "usdt":           _fmt_billions(usdt),
+            "usdc":           _fmt_billions(usdc),
+            "usdt_share":     round(usdt / total * 100, 1) if total else 0,
+            "usdc_share":     round(usdc / total * 100, 1) if total else 0,
+            "usdt_7d":        "—",
+            "usdc_7d":        "—",
+            "_is_historical": True,
+            "_date":          date,
+        }
+
+    # ── 4. BTC Dominance ────────────────────────────────────────────────────
+    # Schema: date, dominance_pct, btc_market_cap, total_market_cap
+    with sqlite3.connect(DOMINANCE_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT * FROM btc_dominance WHERE date = ?", (date,)
+        ).fetchone()
+    if row:
+        dom, btc_c, tot_c = row[1], row[2], row[3]
+        result["btc_dominance"] = {
+            "name":           "BTC Dominance",
+            "category":       "Market Structure · USD",
+            "current":        f"{dom:.2f}%",
+            "current_dir":    "flat",
+            "d7":             "—",
+            "vs30d":          "—",
+            "percentile":     0,
+            "alert":          "—",
+            "alert_level":    "none",
+            "pattern":        f"{dom:.1f}% of total crypto market cap",
+            "spark":          [],
+            "btc_cap":        _fmt_billions(btc_c),
+            "alt_cap":        _fmt_billions(tot_c - btc_c),
+            "total_cap":      _fmt_billions(tot_c),
+            "btc_share":      round(dom, 1),
+            "alt_share":      round(100 - dom, 1),
+            "dominance_pct":  round(dom, 2),
+            "_is_historical": True,
+            "_date":          date,
+        }
+
+    if not result:
+        return {
+            "error":   f"No data found for {date}",
+            "metrics": {},
+            "count":   0,
+            "date":    date,
+        }
+
+    return {
+        "date":    date,
+        "metrics": result,
+        "count":   len(result),
+    }
+
 
 @app.get("/summary")
 def get_summary():
