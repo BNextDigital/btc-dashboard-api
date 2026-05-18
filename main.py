@@ -1588,3 +1588,75 @@ def get_history_summary():
         "by_metric":  counts,
         "summaries":  summaries,
     }
+
+
+@app.get("/db/summary")
+def get_db_summary():
+    """Quick overview of all historical data across every SQLite store."""
+    summary = {}
+
+    # Manual history (netflow, LTH, ETF, realized cap, funding, OI)
+    try:
+        counts = get_row_count()
+        stats  = {}
+        for metric in ["exchange_netflow", "lth_supply", "etf_flow",
+                       "realized_cap", "funding", "open_interest"]:
+            s = get_summary_stats(metric)
+            stats[metric] = s
+        summary["manual_history"] = {
+            "row_counts": counts,
+            "stats":      stats,
+        }
+    except Exception as e:
+        summary["manual_history"] = {"error": str(e)}
+
+    # CME Basis
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            count  = conn.execute("SELECT COUNT(*) FROM cme_basis").fetchone()[0]
+            oldest = conn.execute("SELECT MIN(date) FROM cme_basis").fetchone()[0]
+            newest = conn.execute("SELECT MAX(date) FROM cme_basis").fetchone()[0]
+            dates  = [r[0] for r in conn.execute(
+                "SELECT date FROM cme_basis ORDER BY date DESC LIMIT 10"
+            ).fetchall()]
+        summary["cme_basis"] = {"count": count, "oldest": oldest, "newest": newest, "recent_10": dates}
+    except Exception as e:
+        summary["cme_basis"] = {"error": str(e)}
+
+    # Stablecoin
+    try:
+        with sqlite3.connect(STABLECOIN_DB_PATH) as conn:
+            count  = conn.execute("SELECT COUNT(*) FROM stablecoin_supply").fetchone()[0]
+            oldest = conn.execute("SELECT MIN(date) FROM stablecoin_supply").fetchone()[0]
+            newest = conn.execute("SELECT MAX(date) FROM stablecoin_supply").fetchone()[0]
+            dates  = [r[0] for r in conn.execute(
+                "SELECT date FROM stablecoin_supply ORDER BY date DESC LIMIT 10"
+            ).fetchall()]
+        summary["stablecoin_supply"] = {"count": count, "oldest": oldest, "newest": newest, "recent_10": dates}
+    except Exception as e:
+        summary["stablecoin_supply"] = {"error": str(e)}
+
+    # BTC Dominance
+    try:
+        with sqlite3.connect(DOMINANCE_DB_PATH) as conn:
+            count  = conn.execute("SELECT COUNT(*) FROM btc_dominance").fetchone()[0]
+            oldest = conn.execute("SELECT MIN(date) FROM btc_dominance").fetchone()[0]
+            newest = conn.execute("SELECT MAX(date) FROM btc_dominance").fetchone()[0]
+            dates  = [r[0] for r in conn.execute(
+                "SELECT date FROM btc_dominance ORDER BY date DESC LIMIT 10"
+            ).fetchall()]
+        summary["btc_dominance"] = {"count": count, "oldest": oldest, "newest": newest, "recent_10": dates}
+    except Exception as e:
+        summary["btc_dominance"] = {"error": str(e)}
+
+    # OI snapshots
+    try:
+        from oi_history import get_snapshot_count, get_snapshots
+        summary["oi_history"] = {
+            "count":    get_snapshot_count(),
+            "recent_5": get_snapshots(days=1),
+        }
+    except Exception as e:
+        summary["oi_history"] = {"error": str(e)}
+
+    return summary
