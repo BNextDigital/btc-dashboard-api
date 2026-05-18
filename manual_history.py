@@ -28,7 +28,7 @@ METRICS = [
 
 def init_db() -> None:
     """Create tables if they don't exist."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS metric_history (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +82,7 @@ def upsert_metric(
     If a row for (metric, date) already exists, updates all fields.
     """
     now = int(time.time())
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             INSERT INTO metric_history
                 (metric, date, current, d7, vs30d, percentile, alert, pattern,
@@ -109,7 +109,7 @@ def upsert_metric(
 
 def get_history(metric: str, days: int = 90) -> list[dict]:
     """Returns history for a metric, most recent first."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
             SELECT date, current, d7, vs30d, percentile, alert, pattern,
                    source, notes, raw_value, raw_unit, updated_at
@@ -140,7 +140,7 @@ def get_history(metric: str, days: int = 90) -> list[dict]:
 
 def get_entry(metric: str, date: str) -> dict | None:
     """Returns a single entry for a metric on a specific date."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute("""
             SELECT date, current, d7, vs30d, percentile, alert, pattern,
                    source, notes, raw_value, raw_unit, updated_at
@@ -169,7 +169,7 @@ def get_entry(metric: str, date: str) -> dict | None:
 
 def get_all_dates(metric: str) -> list[str]:
     """Returns all dates with data for a metric, most recent first."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
             SELECT date FROM metric_history
             WHERE metric = ?
@@ -183,7 +183,7 @@ def get_percentile_from_history(metric: str, raw_value: float, window_days: int 
     Computes where raw_value ranks within the last window_days of history.
     Returns percentile 0-100, or None if not enough data.
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
             SELECT raw_value FROM metric_history
             WHERE metric = ? AND raw_value IS NOT NULL
@@ -201,7 +201,7 @@ def get_percentile_from_history(metric: str, raw_value: float, window_days: int 
 
 def get_summary_stats(metric: str, window_days: int = 30) -> dict:
     """Returns summary statistics for a metric over a window."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
             SELECT date, percentile, alert, raw_value
             FROM metric_history
@@ -229,7 +229,7 @@ def get_summary_stats(metric: str, window_days: int = 30) -> dict:
 
 def get_row_count() -> dict:
     """Returns total row count per metric."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
             SELECT metric, COUNT(*) FROM metric_history
             GROUP BY metric ORDER BY metric
