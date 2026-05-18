@@ -11,7 +11,10 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-DB_FILE = "manual_history.db"
+import os
+from pathlib import Path
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+DB_PATH  = DATA_DIR / "manual_history.db"
 
 METRICS = [
     "exchange_netflow",
