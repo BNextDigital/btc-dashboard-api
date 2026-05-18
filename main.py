@@ -45,6 +45,8 @@ from manual_history import (
     get_summary_stats,
     get_row_count,
 )
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ─── App ───────────────────────────────────────────────────────────────────
@@ -65,7 +67,7 @@ app.add_middleware(
 
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
 
-DB_PATH = Path("basis_history.db")
+DB_PATH = DATA_DIR / "basis_history.db"
 
 
 def init_basis_db():
@@ -110,7 +112,7 @@ def query_basis_history(days: int) -> list:
 
 init_basis_db()
 
-STABLECOIN_DB_PATH = Path("stablecoin_history.db")
+STABLECOIN_DB_PATH = DATA_DIR / "stablecoin_history.db"
 
 def init_stablecoin_db():
     with sqlite3.connect(STABLECOIN_DB_PATH) as conn:
@@ -146,7 +148,7 @@ def query_stablecoin_history(days: int) -> list:
 
 init_stablecoin_db()
 
-DOMINANCE_DB_PATH = Path("btc_dominance_history.db")
+DOMINANCE_DB_PATH = DATA_DIR / "btc_dominance_history.db"
 
 def init_dominance_db():
     with sqlite3.connect(DOMINANCE_DB_PATH) as conn:
