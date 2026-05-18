@@ -578,6 +578,8 @@ PROXY_TICKERS = {
 
 _proxy_cache: dict = {"data": None, "ts": 0.0}
 PROXY_CACHE_TTL   = 300  # 5 minutes — yfinance calls are slow
+_metrics_cache: dict = {"data": None, "ts": 0.0}
+METRICS_CACHE_TTL = 60  # seconds
 
 
 def _pearson(a: np.ndarray, b: np.ndarray) -> float:
@@ -851,7 +853,14 @@ def _build_metrics(cg: dict) -> dict:
         "stablecoin_supply": format_stablecoin_supply(**get(stablecoin_raw, "stablecoin_supply")),
         "btc_dominance": format_btc_dominance(**get(dominance_raw, "btc_dominance")),
     }
-
+def _build_metrics_cached(cg: dict) -> dict:
+    now = time.time()
+    if _metrics_cache["data"] and now - _metrics_cache["ts"] < METRICS_CACHE_TTL:
+        return _metrics_cache["data"]
+    result = _build_metrics(cg)
+    _metrics_cache["data"] = result
+    _metrics_cache["ts"] = now
+    return result
 
 # ─── Routes ────────────────────────────────────────────────────────────────
 
@@ -864,7 +873,7 @@ def root():
 def get_metrics():
     cg = get_shared_coingecko()
     overrides = _load_overrides()
-    metrics = _build_metrics(cg)
+    metrics = _build_metrics_cached(cg)
 
     def resolve(key):
         if key in overrides:
@@ -1009,7 +1018,7 @@ def get_metrics_history(date: str):
 @app.get("/summary")
 def get_summary():
     cg = get_shared_coingecko()
-    metrics = _apply_overrides(_build_metrics(cg))
+    metrics = _apply_overrides(_build_metrics_cached(cg))
 
     active_alerts = []
     for m in metrics.values():
@@ -1052,7 +1061,7 @@ def get_summary():
 @app.get("/causal")
 def get_causal():
     cg = get_shared_coingecko()
-    metrics = _apply_overrides(_build_metrics(cg))
+    metrics = _apply_overrides(_build_metrics_cached(cg))
 
     def weight_from_level(level: str) -> str:
         return {"extreme": "extreme", "notable": "strong", "neutral": "moderate"}.get(level, "moderate")
