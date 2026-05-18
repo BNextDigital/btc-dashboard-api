@@ -9,7 +9,7 @@ DB_PATH  = DATA_DIR / "oi_history.db"
 
 
 def init_db() -> None:
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS oi_snapshots (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,7 +26,7 @@ def init_db() -> None:
 
 def store_snapshot(oi_usd: float) -> None:
     ts = int(time.time())
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "INSERT INTO oi_snapshots (timestamp, oi_usd) VALUES (?, ?)",
             (ts, oi_usd)
@@ -36,7 +36,7 @@ def store_snapshot(oi_usd: float) -> None:
 
 def get_snapshots(days: int = 35) -> list[dict]:
     cutoff = int(time.time()) - (days * 86400)
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             "SELECT timestamp, oi_usd FROM oi_snapshots WHERE timestamp >= ? ORDER BY timestamp ASC",
             (cutoff,)
@@ -45,7 +45,7 @@ def get_snapshots(days: int = 35) -> list[dict]:
 
 
 def get_latest_snapshot() -> dict | None:
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
             "SELECT timestamp, oi_usd FROM oi_snapshots ORDER BY timestamp DESC LIMIT 1"
         ).fetchone()
@@ -53,12 +53,12 @@ def get_latest_snapshot() -> dict | None:
 
 
 def get_snapshot_count() -> int:
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         return conn.execute("SELECT COUNT(*) FROM oi_snapshots").fetchone()[0]
 
 
 def prune_old_snapshots(keep_days: int = 90) -> None:
     cutoff = int(time.time()) - (keep_days * 86400)
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM oi_snapshots WHERE timestamp < ?", (cutoff,))
         conn.commit()
