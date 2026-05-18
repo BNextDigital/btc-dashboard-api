@@ -13,6 +13,8 @@ import pandas as pd
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from macro_routes import macro_router
+  app.include_router(macro_router)
 
 from formatters import (
     format_etf_flow, format_funding, format_open_interest,
