@@ -497,7 +497,8 @@ def fetch_funding(markets: list | None = None) -> dict | None:
 
         total_oi     = sum(m["open_interest"] for m in valid)
         weighted_sum = sum(m["funding_rate"] * m["open_interest"] for m in valid)
-        current_rate = weighted_sum / total_oi if total_oi else 0
+        # CoinGecko returns funding_rate in basis points — divide by 100 to get decimal
+        current_rate = (weighted_sum / total_oi) / 100 if total_oi else 0
 
         # Percentile range calibrated to realistic BTC funding per 8h
         min_r, max_r = -0.0001, 0.0003
