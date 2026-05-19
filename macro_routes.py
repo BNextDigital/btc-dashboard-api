@@ -281,27 +281,27 @@ def _fmt_hy_oas(fred_data: dict) -> dict:
         return {"current": None, "error": err}
     dates, vals = zip(*values)
     vals = list(vals)
-    current = round(vals[-1], 1)
-    d5  = round(current - vals[-6], 1)  if len(vals) >= 6  else None
-    d20 = round(current - vals[-21], 1) if len(vals) >= 21 else None
+    current = round(vals[-1], 2)
+    d5  = round(current - vals[-6], 2)  if len(vals) >= 6  else None
+    d20 = round(current - vals[-21], 2) if len(vals) >= 21 else None
     pctile = _pct_rank(vals, current)
 
-    def _alert(p, cur):
+    def _alert(cur):
         if cur is None: return "Normal"
-        if cur >= 600: return "Distress"
-        if cur >= 450: return "Stressed"
-        if cur >= 350: return "Moderately stressed"
-        if cur <= 250: return "Compressed / risk-on"
+        if cur >= 6.0:  return "Distress"
+        if cur >= 4.5:  return "Stressed"
+        if cur >= 3.5:  return "Moderately stressed"
+        if cur <= 2.5:  return "Compressed / risk-on"
         return "Normal"
 
     return {
-        "current":   current,
-        "d5_chg":    d5,
-        "d20_chg":   d20,
+        "current":    current,
+        "d5_chg":     d5,
+        "d20_chg":    d20,
         "percentile": pctile,
-        "alert":     _alert(pctile, current),
-        "pattern":   "Spreads tightening" if (d5 and d5 < -10) else \
-                     "Spreads widening" if (d5 and d5 > 10) else "Stable",
+        "alert":      _alert(current),
+        "pattern":    "Spreads tightening" if (d5 and d5 < -0.10) else \
+                      "Spreads widening"   if (d5 and d5 > 0.10)  else "Stable",
     }
 
 
