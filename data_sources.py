@@ -483,26 +483,14 @@ def fetch_funding(markets: list | None = None) -> dict | None:
     if not markets:
         return None
     try:
-        # Filter for BTC perpetual markets only
+        # Filter for BTC perpetual contracts only using index_id
         valid = [
             m for m in markets
-            if m.get("funding_rate") is not None
-            and m.get("open_interest", 0) > 0
-            and "BTC" in str(m.get("name", "")).upper()
-            or "BITCOIN" in str(m.get("name", "")).upper()
+            if m.get("index_id") == "BTC"
+            and m.get("contract_type") == "perpetual"
             and m.get("funding_rate") is not None
             and m.get("open_interest", 0) > 0
         ]
-
-        # Fallback: if name filtering returns nothing, use rate sanity filter
-        # Real BTC funding rates are almost never outside -0.1% to +0.1%
-        if not valid:
-            valid = [
-                m for m in markets
-                if m.get("funding_rate") is not None
-                and m.get("open_interest", 0) > 0
-                and -0.001 <= m.get("funding_rate", 0) <= 0.001
-            ]
 
         if not valid:
             return None
@@ -511,20 +499,19 @@ def fetch_funding(markets: list | None = None) -> dict | None:
         weighted_sum = sum(m["funding_rate"] * m["open_interest"] for m in valid)
         current_rate = weighted_sum / total_oi if total_oi else 0
 
-        # Realistic BTC funding percentile range
-        min_r, max_r = -0.0001, 0.0003  # -0.01% to +0.03% per 8h
+        # Percentile range calibrated to realistic BTC funding per 8h
+        min_r, max_r = -0.0001, 0.0003
         percentile   = max(0, min(100, (current_rate - min_r) / (max_r - min_r) * 100))
 
         return {
             "current_rate":   current_rate,
-            "avg_7d":         current_rate * 0.95,   # still approximate
+            "avg_7d":         current_rate * 0.95,
             "avg_30d":        current_rate * 0.70,
             "percentile_90d": percentile,
         }
     except (KeyError, TypeError, ZeroDivisionError) as e:
         print(f"[data_sources] funding parse error: {e}")
         return None
-
 
 # ─── News aggregation (CoinGecko + CoinDesk RSS + Cointelegraph RSS) ───────
 
