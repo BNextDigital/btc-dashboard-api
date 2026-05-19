@@ -501,7 +501,7 @@ def fetch_funding(markets: list | None = None) -> dict | None:
         current_rate = (weighted_sum / total_oi) / 100 if total_oi else 0
 
         # Percentile range calibrated to realistic BTC funding per 8h
-        min_r, max_r = -0.0001, 0.0003
+        min_r, max_r = -0.0001, 0.0006
         percentile   = max(0, min(100, (current_rate - min_r) / (max_r - min_r) * 100))
 
         return {
