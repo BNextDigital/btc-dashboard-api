@@ -1686,3 +1686,11 @@ def get_db_summary():
         summary["oi_history"] = {"error": str(e)}
 
     return summary
+
+@app.get("/debug/funding")
+def debug_funding():
+    markets = _fetch_coingecko_derivatives()
+    if not markets:
+        return {"error": "no markets"}
+    sample = [m for m in markets if m.get("funding_rate") is not None][:5]
+    return {"sample": [{"name": m.get("name"), "funding_rate": m.get("funding_rate"), "oi": m.get("open_interest")} for m in sample]}
