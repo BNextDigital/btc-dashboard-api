@@ -9,12 +9,12 @@ from pathlib import Path
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
-from macro_routes import macro_router
+
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
+from macro_routes import macro_router
 
 from formatters import (
     format_etf_flow, format_funding, format_open_interest,
