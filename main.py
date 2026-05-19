@@ -1672,5 +1672,6 @@ def get_db_summary():
         summary["oi_history"] = {"error": str(e)}
 
     return summary
+
 from macro_routes import macro_router
-  app.include_router(macro_router)
+app.include_router(macro_router)
