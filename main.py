@@ -1692,5 +1692,13 @@ def debug_funding():
     markets = _fetch_coingecko_derivatives()
     if not markets:
         return {"error": "no markets"}
-    sample = [m for m in markets if m.get("funding_rate") is not None][:5]
-    return {"sample": [{"name": m.get("name"), "funding_rate": m.get("funding_rate"), "oi": m.get("open_interest")} for m in markets[:10]]}
+    btc_perps = [
+        m for m in markets
+        if m.get("index_id") == "BTC"
+        and m.get("contract_type") == "perpetual"
+        and m.get("funding_rate") is not None
+    ]
+    return {
+        "btc_perp_count": len(btc_perps),
+        "sample": [{"market": m.get("market"), "symbol": m.get("symbol"), "funding_rate": m.get("funding_rate"), "oi": m.get("open_interest")} for m in btc_perps[:10]]
+    }
