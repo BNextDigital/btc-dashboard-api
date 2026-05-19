@@ -17,11 +17,6 @@ from macro_routes import macro_router
 from contextlib import asynccontextmanager
 
 
-# then middleware and routers as normal
-app.add_middleware(CORSMiddleware, ...)
-app.include_router(macro_router)
-
-
 from formatters import (
     format_etf_flow, format_funding, format_open_interest,
     format_exchange_netflow, format_volume, format_price_move,
