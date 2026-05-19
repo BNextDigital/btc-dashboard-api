@@ -1693,4 +1693,4 @@ def debug_funding():
     if not markets:
         return {"error": "no markets"}
     sample = [m for m in markets if m.get("funding_rate") is not None][:5]
-    return {"sample": [{"name": m.get("name"), "funding_rate": m.get("funding_rate"), "oi": m.get("open_interest")} for m in sample]}
+       return {"sample": [{"name": m.get("name"), "funding_rate": m.get("funding_rate"), "oi": m.get("open_interest")} for m in markets[:10]]}
