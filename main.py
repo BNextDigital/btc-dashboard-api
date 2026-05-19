@@ -10,11 +10,17 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-
+from pydantic import BaseModel
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from macro_routes import macro_router
+from contextlib import asynccontextmanager
+
+
+# then middleware and routers as normal
+app.add_middleware(CORSMiddleware, ...)
+app.include_router(macro_router)
+
 
 from formatters import (
     format_etf_flow, format_funding, format_open_interest,
@@ -53,7 +59,19 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ─── App ───────────────────────────────────────────────────────────────────
 
+# lifespan goes here, before app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        from macro_routes import _build_macro_metrics
+        _build_macro_metrics()
+    except Exception:
+        pass
+    yield
+
+# then app uses it
 app = FastAPI(title="BTC Decision Dashboard API")
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
