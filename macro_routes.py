@@ -38,8 +38,8 @@ MACRO_DB_PATH = os.path.join(DATA_DIR, "macro_history.db")
 # yFinance tickers
 YF_TICKERS = {
     "yield_1y":  "^IRX",    # 13-week T-bill proxy for 1Y (closest freely available)
-    "yield_2y":  "^TWO",    # 2Y Treasury
-    "yield_3y":  "^THREE",  # 3Y Treasury (may fall back gracefully)
+#    "yield_2y":  "^TWO",    # 2Y Treasury
+#    "yield_3y":  "^THREE",  # 3Y Treasury (may fall back gracefully)
     "yield_5y":  "^FVX",    # 5Y Treasury
     "yield_10y": "^TNX",    # 10Y Treasury
     "dxy":       "DX-Y.NYB",
