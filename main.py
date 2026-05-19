@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
+from macro_routes import macro_router
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,7 +66,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+app.include_router(macro_router)
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
 
 DB_PATH = DATA_DIR / "basis_history.db"
@@ -1672,6 +1673,3 @@ def get_db_summary():
         summary["oi_history"] = {"error": str(e)}
 
     return summary
-
-from macro_routes import macro_router
-app.include_router(macro_router)
