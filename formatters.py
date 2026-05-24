@@ -114,10 +114,13 @@ def format_funding(
     avg_7d: float,
     avg_30d: float,
     percentile_90d: float,
+    spread: float = 0.0,
+    exchange_rates: dict = None,
+    high_exchange: str = "",
+    low_exchange: str = "",
     **kwargs,
 ) -> dict:
     ratio = avg_7d / avg_30d if avg_30d else 0
-
     if percentile_90d >= 90:
         alert = "Extreme leverage"
     elif percentile_90d >= 75:
@@ -129,21 +132,31 @@ def format_funding(
 
     pattern = "Leveraged move" if percentile_90d >= 75 else "—"
 
+    # Spread label
+    spread_pct = spread * 100
+    if spread_pct > 0.005:
+        spread_label = f"Wide · {spread_pct:.4f}% range"
+    else:
+        spread_label = f"Tight · {spread_pct:.4f}% range"
+
     return {
-        "name":        "Funding",
-        "category":    "Derivatives",
-        "current":     f"{current_rate * 100:.3f}%",
-        "current_dir": "up" if current_rate >= 0 else "down",
-        "d7":          f"{avg_7d * 100:.3f}% avg",
-        "vs30d":       _format_pct_change(ratio - 1),
-        "percentile":  round(percentile_90d),
-        "alert":       alert,
-        "alert_level": _classify_alert(alert),
-        "pattern":     pattern,
-        "spark":       kwargs.get("_spark", []),
+        "name":           "Funding",
+        "category":       "Derivatives",
+        "current":        f"{current_rate * 100:.4f}%",
+        "current_dir":    "up" if current_rate >= 0 else "down",
+        "d7":             f"{avg_7d * 100:.4f}% avg",
+        "vs30d":          _format_pct_change(ratio - 1),
+        "percentile":     round(percentile_90d),
+        "alert":          alert,
+        "alert_level":    _classify_alert(alert),
+        "pattern":        pattern,
+        "spark":          kwargs.get("_spark", []),
+        "spread":         round(spread_pct, 4),
+        "spread_label":   spread_label,
+        "exchange_rates": exchange_rates or {},
+        "high_exchange":  high_exchange,
+        "low_exchange":   low_exchange,
     }
-
-
 # ─── OPEN INTEREST ─────────────────────────────────────────────────────────
 
 def format_open_interest(
