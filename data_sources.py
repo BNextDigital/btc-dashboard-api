@@ -483,24 +483,34 @@ def fetch_funding(markets: list | None = None) -> dict | None:
     if not markets:
         return None
     try:
-        # Filter for BTC perpetual contracts only using index_id
-        valid = [
-            m for m in markets
-            if m.get("index_id") == "BTC"
-            and m.get("contract_type") == "perpetual"
-            and m.get("funding_rate") is not None
-            and m.get("open_interest", 0) > 0
-        ]
+        # Use Binance BTCUSDT as the reference rate — it's the market standard
+        binance_btc = next(
+            (m for m in markets
+             if m.get("market") == "Binance (Futures)"
+             and m.get("symbol") == "BTCUSDT"
+             and m.get("funding_rate") is not None),
+            None
+        )
 
-        if not valid:
-            return None
+        if not binance_btc:
+            # Fallback: OI-weighted average of major exchanges only
+            MAJOR = {"Bybit (Futures)", "OKX (Futures)", "Bitget (Futures)"}
+            valid = [
+                m for m in markets
+                if m.get("index_id") == "BTC"
+                and m.get("contract_type") == "perpetual"
+                and m.get("market") in MAJOR
+                and m.get("funding_rate") is not None
+                and m.get("open_interest", 0) > 0
+            ]
+            if not valid:
+                return None
+            total_oi     = sum(m["open_interest"] for m in valid)
+            weighted_sum = sum(m["funding_rate"] * m["open_interest"] for m in valid)
+            current_rate = (weighted_sum / total_oi) / 100 if total_oi else 0
+        else:
+            current_rate = binance_btc["funding_rate"] / 100
 
-        total_oi     = sum(m["open_interest"] for m in valid)
-        weighted_sum = sum(m["funding_rate"] * m["open_interest"] for m in valid)
-        # CoinGecko returns funding_rate in basis points — divide by 100 to get decimal
-        current_rate = (weighted_sum / total_oi) / 100 if total_oi else 0
-
-        # Percentile range calibrated to realistic BTC funding per 8h
         min_r, max_r = -0.0001, 0.0006
         percentile   = max(0, min(100, (current_rate - min_r) / (max_r - min_r) * 100))
 
@@ -513,7 +523,6 @@ def fetch_funding(markets: list | None = None) -> dict | None:
     except (KeyError, TypeError, ZeroDivisionError) as e:
         print(f"[data_sources] funding parse error: {e}")
         return None
-
 # ─── News aggregation (CoinGecko + CoinDesk RSS + Cointelegraph RSS) ───────
 
 def _fetch_rss(url: str) -> list[dict]:
