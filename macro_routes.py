@@ -44,9 +44,6 @@ YF_TICKERS = {
     "yield_10y": "^TNX",    # 10Y Treasury
     "dxy":       "DX-Y.NYB",
     "vix":       "^VIX",
-    "ndx": "^NDX",
-    "sp500":  "^GSPC",
-    "vxn": "^VXN"
 }
 
 # FRED series
@@ -68,9 +65,6 @@ def _macro_db():
             dxy         REAL,
             vix         REAL,
             hy_oas      REAL,
-            ndx         REAL,
-            sp500       REAL,
-            vxn         REAL,
             stored_at   TEXT
         )
     """)
@@ -85,7 +79,7 @@ def _store_macro_snapshot(snap: dict):
     conn.execute("""
         INSERT INTO macro_snapshots
             (date, yield_1y, yield_2y, yield_3y, yield_5y, yield_10y,
-             dxy, vix, hy_oas, ndx, sp500, vxn, stored_at)
+             dxy, vix, hy_oas, stored_at)
         VALUES (?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(date) DO UPDATE SET
             yield_1y=excluded.yield_1y, yield_2y=excluded.yield_2y,
@@ -98,7 +92,6 @@ def _store_macro_snapshot(snap: dict):
         snap.get("yield_1y"), snap.get("yield_2y"),
         snap.get("yield_3y"), snap.get("yield_5y"), snap.get("yield_10y"),
         snap.get("dxy"), snap.get("vix"), snap.get("hy_oas"),
-        snap.get("ndx"), snap.get("sp500), snap.get("vxn"),
         datetime.utcnow().isoformat()
     ))
     conn.commit()
