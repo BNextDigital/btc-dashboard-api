@@ -1,14 +1,13 @@
 """
-macro_routes.py — Add these routes to your existing main.py
+macro_routes.py (EXTENDED) — Add these routes to your existing main.py
 
 Fetches macro data for the /macro/* endpoints:
-  /macro/metrics — yields, DXY, VIX, HY OAS (all in one call)
+  /macro/metrics — yields, DXY, VIX, HY OAS, + NEW: Nasdaq-100, VXN, S&P 500, Brent Crude with SMAs
   /macro/history — SQLite snapshots for historical view
 
 Data sources:
-  - yFinance (already installed): ^TNX, ^FVX, ^IRX, DX-Y.NYB, ^VIX
-  - FRED API (free key): ICE BofA HY OAS series BAMLH0A0HYM2
-  - Stablecoin / ETF / Funding: reuse existing _build_metrics_cached()
+  - yFinance: ^TNX, ^FVX, ^IRX, DX-Y.NYB, ^VIX, ^IXIC, ^VXN, ^GSPC, BZ=F
+  - FRED API: ICE BofA HY OAS (BAMLH0A0HYM2)
 
 Setup:
   1. Get a free FRED API key at https://fred.stlouisfed.org/docs/api/api_key.html
@@ -24,10 +23,9 @@ import os, time, sqlite3, requests
 from datetime import datetime, timedelta, date
 from fastapi import APIRouter
 import yfinance as yf
+import pandas as pd
 
 # ── Router ─────────────────────────────────────────────────────────────────
-# If you prefer to keep everything in main.py, remove the router and
-# use @app.get("/macro/...") directly.
 macro_router = APIRouter(prefix="/macro")
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -37,17 +35,19 @@ MACRO_DB_PATH = os.path.join(DATA_DIR, "macro_history.db")
 
 # yFinance tickers
 YF_TICKERS = {
-    "yield_1y":  "^IRX",    # 13-week T-bill proxy for 1Y (closest freely available)
-#    "yield_2y":  "^TWO",    # 2Y Treasury
-#    "yield_3y":  "^THREE",  # 3Y Treasury (may fall back gracefully)
-    "yield_5y":  "^FVX",    # 5Y Treasury
-    "yield_10y": "^TNX",    # 10Y Treasury
+    "yield_1y":  "^IRX",
+    "yield_5y":  "^FVX",
+    "yield_10y": "^TNX",
     "dxy":       "DX-Y.NYB",
     "vix":       "^VIX",
+    "nasdaq100": "^IXIC",    # NEW: Nasdaq-100 Composite
+    "vxn":       "^VXN",     # NEW: Nasdaq Volatility Index
+    "sp500":     "^GSPC",    # NEW: S&P 500
+    "brent":     "BZ=F",     # NEW: Brent Crude Oil futures
 }
 
 # FRED series
-FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"   # ICE BofA US High Yield OAS (daily, free)
+FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
 
 # ── SQLite helpers ───────────────────────────────────────────────────────────
 
@@ -65,6 +65,19 @@ def _macro_db():
             dxy         REAL,
             vix         REAL,
             hy_oas      REAL,
+            nasdaq100   REAL,
+            nasdaq100_sma20 REAL,
+            nasdaq100_sma50 REAL,
+            nasdaq100_sma200 REAL,
+            vxn         REAL,
+            sp500       REAL,
+            sp500_sma20 REAL,
+            sp500_sma50 REAL,
+            sp500_sma200 REAL,
+            brent       REAL,
+            brent_sma20 REAL,
+            brent_sma50 REAL,
+            brent_sma200 REAL,
             stored_at   TEXT
         )
     """)
@@ -79,19 +92,30 @@ def _store_macro_snapshot(snap: dict):
     conn.execute("""
         INSERT INTO macro_snapshots
             (date, yield_1y, yield_2y, yield_3y, yield_5y, yield_10y,
-             dxy, vix, hy_oas, stored_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+             dxy, vix, hy_oas, nasdaq100, nasdaq100_sma20, nasdaq100_sma50, nasdaq100_sma200,
+             vxn, sp500, sp500_sma20, sp500_sma50, sp500_sma200,
+             brent, brent_sma20, brent_sma50, brent_sma200, stored_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(date) DO UPDATE SET
             yield_1y=excluded.yield_1y, yield_2y=excluded.yield_2y,
             yield_3y=excluded.yield_3y, yield_5y=excluded.yield_5y,
             yield_10y=excluded.yield_10y, dxy=excluded.dxy,
             vix=excluded.vix, hy_oas=excluded.hy_oas,
-            stored_at=excluded.stored_at
+            nasdaq100=excluded.nasdaq100, nasdaq100_sma20=excluded.nasdaq100_sma20,
+            nasdaq100_sma50=excluded.nasdaq100_sma50, nasdaq100_sma200=excluded.nasdaq100_sma200,
+            vxn=excluded.vxn, sp500=excluded.sp500,
+            sp500_sma20=excluded.sp500_sma20, sp500_sma50=excluded.sp500_sma50,
+            sp500_sma200=excluded.sp500_sma200, brent=excluded.brent,
+            brent_sma20=excluded.brent_sma20, brent_sma50=excluded.brent_sma50,
+            brent_sma200=excluded.brent_sma200, stored_at=excluded.stored_at
     """, (
         today,
         snap.get("yield_1y"), snap.get("yield_2y"),
         snap.get("yield_3y"), snap.get("yield_5y"), snap.get("yield_10y"),
         snap.get("dxy"), snap.get("vix"), snap.get("hy_oas"),
+        snap.get("nasdaq100"), snap.get("nasdaq100_sma20"), snap.get("nasdaq100_sma50"), snap.get("nasdaq100_sma200"),
+        snap.get("vxn"), snap.get("sp500"), snap.get("sp500_sma20"), snap.get("sp500_sma50"), snap.get("sp500_sma200"),
+        snap.get("brent"), snap.get("brent_sma20"), snap.get("brent_sma50"), snap.get("brent_sma200"),
         datetime.utcnow().isoformat()
     ))
     conn.commit()
@@ -102,22 +126,26 @@ def _fetch_macro_history_rows(n_days: int = 95) -> list[dict]:
     conn = _macro_db()
     rows = conn.execute("""
         SELECT date, yield_1y, yield_2y, yield_3y, yield_5y, yield_10y,
-               dxy, vix, hy_oas
+               dxy, vix, hy_oas, nasdaq100, nasdaq100_sma20, nasdaq100_sma50, nasdaq100_sma200,
+               vxn, sp500, sp500_sma20, sp500_sma50, sp500_sma200,
+               brent, brent_sma20, brent_sma50, brent_sma200
         FROM macro_snapshots
         ORDER BY date DESC
         LIMIT ?
     """, (n_days,)).fetchall()
     conn.close()
     cols = ["date","yield_1y","yield_2y","yield_3y","yield_5y","yield_10y",
-            "dxy","vix","hy_oas"]
+            "dxy","vix","hy_oas","nasdaq100","nasdaq100_sma20","nasdaq100_sma50","nasdaq100_sma200",
+            "vxn","sp500","sp500_sma20","sp500_sma50","sp500_sma200",
+            "brent","brent_sma20","brent_sma50","brent_sma200"]
     return [dict(zip(cols, r)) for r in rows]
 
 # ── Data fetchers ────────────────────────────────────────────────────────────
 
-def _fetch_yfinance_bulk(n_days: int = 95) -> dict:
+def _fetch_yfinance_bulk(n_days: int = 200) -> dict:
     """
-    Download n_days of daily data for all tickers in one yfinance call.
-    Returns {ticker_key: pd.Series(close, index=date)}.
+    Download n_days of daily data for all tickers.
+    Returns {ticker_key: pd.DataFrame with Close column}.
     """
     tickers = list(YF_TICKERS.values())
     period = f"{n_days}d"
@@ -130,23 +158,23 @@ def _fetch_yfinance_bulk(n_days: int = 95) -> dict:
             if ticker in close.columns:
                 result[key] = close[ticker].dropna()
             else:
-                result[key] = None
+                # Single ticker case — close is a Series, not a DataFrame
+                if len(YF_TICKERS) == 1:
+                    result[key] = close.dropna()
+                else:
+                    result[key] = None
         return result
     except Exception as e:
         print(f"yfinance bulk download error: {e}")
         return {k: None for k in YF_TICKERS}
 
 
-def _fetch_fred_hy_oas(n_days: int = 95) -> dict:
-    """
-    Fetch ICE BofA HY OAS from FRED.
-    Returns {"values": [(date_str, float), ...]} oldest-first.
-    Falls back gracefully if no API key.
-    """
+def _fetch_fred_hy_oas(n_days: int = 200) -> dict:
+    """Fetch ICE BofA HY OAS from FRED."""
     if not FRED_API_KEY:
         return {"values": [], "error": "No FRED_API_KEY set"}
     end   = date.today()
-    start = end - timedelta(days=n_days + 30)  # extra buffer for weekends
+    start = end - timedelta(days=n_days + 30)
     url = (
         f"https://api.stlouisfed.org/fred/series/observations"
         f"?series_id={FRED_HY_OAS_SERIES}"
@@ -164,13 +192,26 @@ def _fetch_fred_hy_oas(n_days: int = 95) -> dict:
             try:
                 values.append((o["date"], float(o["value"])))
             except (ValueError, KeyError):
-                pass  # skip "." missing values
+                pass
         return {"values": values}
     except Exception as e:
         return {"values": [], "error": str(e)}
 
+# ── SMA Calculator ──────────────────────────────────────────────────────────
 
-# ── Calculators ─────────────────────────────────────────────────────────────
+def _calculate_sma(series, window: int) -> float | None:
+    """Calculate SMA for a pandas Series, return last value."""
+    if series is None or len(series) < window:
+        return None
+    return series.tail(window).mean()
+
+
+def _sma_pct_diff(current: float | None, sma: float | None) -> float | None:
+    """Calculate % difference of current vs SMA: (current - sma) / sma * 100"""
+    if current is None or sma is None or sma == 0:
+        return None
+    return ((current - sma) / sma) * 100
+
 
 def _pct_rank(series, current_val) -> int | None:
     """Return 0–100 percentile of current_val within series."""
@@ -180,6 +221,7 @@ def _pct_rank(series, current_val) -> int | None:
     below = sum(1 for v in arr if v < current_val)
     return round(below / len(arr) * 100)
 
+# ── Formatters ──────────────────────────────────────────────────────────────
 
 def _fmt_yield_card(key: str, series, label: str) -> dict:
     """Format a single yield tenor card."""
@@ -216,11 +258,7 @@ def _fmt_dxy(series) -> dict:
     d20 = round(current - vals[-21], 2) if len(vals) >= 21 else None
     pctile = _pct_rank(vals, current)
 
-    def _direction(chg):
-        if chg is None: return "–"
-        return f"{'+' if chg >= 0 else ''}{chg}"
-
-    def _alert(p, d5v):
+    def _alert(p):
         if p is None: return "Normal"
         if p <= 15: return "USD weakening"
         if p >= 85: return "USD strengthening"
@@ -233,11 +271,9 @@ def _fmt_dxy(series) -> dict:
     return {
         "current":   current,
         "d5_chg":    d5,
-        "d5_pct":    round(d5 / vals[-6] * 100, 1) if (d5 and len(vals) >= 6) else None,
         "d20_chg":   d20,
-        "d20_pct":   round(d20 / vals[-21] * 100, 1) if (d20 and len(vals) >= 21) else None,
         "percentile": pctile,
-        "alert":     _alert(pctile, d5),
+        "alert":     _alert(pctile),
         "pattern":   pattern,
     }
 
@@ -265,9 +301,7 @@ def _fmt_vix(series) -> dict:
     return {
         "current":   current,
         "d5_chg":    d5,
-        "d5_pct":    round(d5 / vals[-6] * 100, 1) if (d5 and len(vals) >= 6) else None,
         "d20_chg":   d20,
-        "d20_pct":   round(d20 / vals[-21] * 100, 1) if (d20 and len(vals) >= 21) else None,
         "percentile": pctile,
         "alert":     _alert(pctile, current),
         "pattern":   pattern,
@@ -305,18 +339,50 @@ def _fmt_hy_oas(fred_data: dict) -> dict:
     }
 
 
-def _spread_label(y2, y10) -> str:
-    if y2 is None or y10 is None: return "–"
-    spread_bp = round((y10 - y2) * 100)
-    if spread_bp < -25: return f"Inverted ({spread_bp:+d}bp)"
-    if spread_bp < 0:   return f"Slightly inverted ({spread_bp:+d}bp)"
-    if spread_bp < 50:  return f"Near flat ({spread_bp:+d}bp)"
-    if spread_bp < 100: return f"Normal steepening ({spread_bp:+d}bp)"
-    return f"Steep ({spread_bp:+d}bp)"
+def _fmt_equity_sma_card(ticker_name: str, series) -> dict:
+    """
+    Format equity/commodity card with 20/50/200 SMAs.
+    Returns: {current, sma20, sma50, sma200, pct_from_20, pct_from_50, pct_from_200, percentile}
+    """
+    if series is None or len(series) == 0:
+        return {"current": None, "error": "No data"}
+
+    vals = series.tolist()
+    current = round(vals[-1], 2)
+
+    sma20 = _calculate_sma(series, 20)
+    sma50 = _calculate_sma(series, 50)
+    sma200 = _calculate_sma(series, 200)
+
+    pct_20 = _sma_pct_diff(current, sma20)
+    pct_50 = _sma_pct_diff(current, sma50)
+    pct_200 = _sma_pct_diff(current, sma200)
+
+    pctile = _pct_rank(vals, current)
+
+    # Alert logic: price relative to 200 SMA
+    alert = "–"
+    if pct_200 is not None:
+        if pct_200 < -10: alert = "Far below 200d SMA"
+        elif pct_200 < -5: alert = "Below 200d SMA"
+        elif pct_200 > 15: alert = "Well above 200d SMA"
+        elif pct_200 > 10: alert = "Above 200d SMA"
+
+    return {
+        "current": current,
+        "sma20": round(sma20, 2) if sma20 else None,
+        "sma50": round(sma50, 2) if sma50 else None,
+        "sma200": round(sma200, 2) if sma200 else None,
+        "pct_from_sma20": round(pct_20, 2) if pct_20 else None,
+        "pct_from_sma50": round(pct_50, 2) if pct_50 else None,
+        "pct_from_sma200": round(pct_200, 2) if pct_200 else None,
+        "percentile": pctile,
+        "alert": alert,
+    }
 
 # ── Cache ────────────────────────────────────────────────────────────────────
 _macro_cache: dict = {"data": None, "ts": 0.0}
-MACRO_CACHE_TTL = 300  # 5 minutes — yfinance + FRED are slow
+MACRO_CACHE_TTL = 300  # 5 minutes
 
 
 def _build_macro_metrics() -> dict:
@@ -325,8 +391,8 @@ def _build_macro_metrics() -> dict:
     if _macro_cache["data"] and (now - _macro_cache["ts"]) < MACRO_CACHE_TTL:
         return _macro_cache["data"]
 
-    yf_data  = _fetch_yfinance_bulk(n_days=95)
-    fred_data = _fetch_fred_hy_oas(n_days=95)
+    yf_data  = _fetch_yfinance_bulk(n_days=200)
+    fred_data = _fetch_fred_hy_oas(n_days=200)
 
     yields = {
         "1y":  _fmt_yield_card("yield_1y",  yf_data.get("yield_1y"),  "1Y"),
@@ -349,10 +415,15 @@ def _build_macro_metrics() -> dict:
         "dxy":    _fmt_dxy(yf_data.get("dxy")),
         "vix":    _fmt_vix(yf_data.get("vix")),
         "hy_oas": _fmt_hy_oas(fred_data),
+        # NEW: Equity & commodity cards with SMAs
+        "nasdaq100": _fmt_equity_sma_card("Nasdaq-100", yf_data.get("nasdaq100")),
+        "vxn":       _fmt_vix_derivative(yf_data.get("vxn")),
+        "sp500":     _fmt_equity_sma_card("S&P 500", yf_data.get("sp500")),
+        "brent":     _fmt_equity_sma_card("Brent Crude", yf_data.get("brent")),
     }
 
-    # Persist snapshot for historical view
-    _store_macro_snapshot({
+    # Persist snapshot
+    snap = {
         "yield_1y":  yields["1y"].get("current"),
         "yield_2y":  yields["2y"].get("current"),
         "yield_3y":  yields["3y"].get("current"),
@@ -361,11 +432,62 @@ def _build_macro_metrics() -> dict:
         "dxy":       result["dxy"].get("current"),
         "vix":       result["vix"].get("current"),
         "hy_oas":    result["hy_oas"].get("current"),
-    })
+        "nasdaq100": result["nasdaq100"].get("current"),
+        "nasdaq100_sma20": result["nasdaq100"].get("sma20"),
+        "nasdaq100_sma50": result["nasdaq100"].get("sma50"),
+        "nasdaq100_sma200": result["nasdaq100"].get("sma200"),
+        "vxn":       result["vxn"].get("current"),
+        "sp500":     result["sp500"].get("current"),
+        "sp500_sma20": result["sp500"].get("sma20"),
+        "sp500_sma50": result["sp500"].get("sma50"),
+        "sp500_sma200": result["sp500"].get("sma200"),
+        "brent":     result["brent"].get("current"),
+        "brent_sma20": result["brent"].get("sma20"),
+        "brent_sma50": result["brent"].get("sma50"),
+        "brent_sma200": result["brent"].get("sma200"),
+    }
+    _store_macro_snapshot(snap)
 
     _macro_cache["data"] = result
     _macro_cache["ts"]   = now
     return result
+
+
+def _fmt_vix_derivative(series) -> dict:
+    """Format VXN as a volatility index (no SMAs, similar to VIX)."""
+    if series is None or len(series) == 0:
+        return {"current": None, "error": "No data"}
+    vals = series.tolist()
+    current = round(vals[-1], 2)
+    d5  = round(current - vals[-6], 2)  if len(vals) >= 6  else None
+    d20 = round(current - vals[-21], 2) if len(vals) >= 21 else None
+    pctile = _pct_rank(vals, current)
+
+    def _alert(cur):
+        if cur is None: return "Normal"
+        if cur >= 30: return "Tech volatility elevated"
+        if cur >= 20: return "Elevated"
+        if cur <= 15: return "Tech calm"
+        return "Normal"
+
+    return {
+        "current":   current,
+        "d5_chg":    d5,
+        "d20_chg":   d20,
+        "percentile": pctile,
+        "alert":     _alert(current),
+        "pattern":   "Tech volatility rising" if (d5 and d5 > 3) else "Tech volatility stable" if (d5 and abs(d5) <= 1) else "Tech volatility falling",
+    }
+
+
+def _spread_label(y2, y10) -> str:
+    if y2 is None or y10 is None: return "–"
+    spread_bp = round((y10 - y2) * 100)
+    if spread_bp < -25: return f"Inverted ({spread_bp:+d}bp)"
+    if spread_bp < 0:   return f"Slightly inverted ({spread_bp:+d}bp)"
+    if spread_bp < 50:  return f"Near flat ({spread_bp:+d}bp)"
+    if spread_bp < 100: return f"Normal steepening ({spread_bp:+d}bp)"
+    return f"Steep ({spread_bp:+d}bp)"
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -373,8 +495,9 @@ def _build_macro_metrics() -> dict:
 def get_macro_metrics():
     """
     Returns: {
-      updated_at, yields {1y,2y,3y,5y,10y}, curve {spread_2y10y_bp, label},
-      dxy, vix, hy_oas
+      updated_at, yields, curve, dxy, vix, hy_oas,
+      nasdaq100 {current, sma20/50/200, pct_from_sma*}, 
+      vxn, sp500, brent
     }
     """
     return _build_macro_metrics()
