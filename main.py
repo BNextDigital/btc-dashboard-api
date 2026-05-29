@@ -855,6 +855,9 @@ def _apply_overrides(metrics: dict) -> dict:
                 "alert_level": override.get("alert_level", metrics[key].get("alert_level")),
                 "pattern":     override.get("pattern",     metrics[key].get("pattern")),
                 "current":     override.get("current",     metrics[key].get("current")),
+                "d7":          override.get("d7",          metrics[key].get("d7")),
+                "vs30d":       override.get("vs30d",       metrics[key].get("vs30d")),
+                "percentile":  override.get("percentile",  metrics[key].get("percentile")),
             }
     return metrics
 
