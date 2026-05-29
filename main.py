@@ -1427,6 +1427,24 @@ def clear_manual_override(metric: str):
         return {"status": "ok", "cleared": metric}
     return {"status": "not_found", "metric": metric}
 
+@app.get("/manual-history/latest")
+def get_latest_manual_history():
+    """Returns the most recent entry for each metric in manual_history.db."""
+    try:
+        conn = sqlite3.connect(os.path.join(DATA_DIR, "manual_history.db"))
+        rows = conn.execute("""
+            SELECT metric, date, current, d7, vs30d, percentile, alert, pattern, source, notes
+            FROM manual_history
+            WHERE (metric, date) IN (
+                SELECT metric, MAX(date) FROM manual_history GROUP BY metric
+            )
+            ORDER BY metric
+        """).fetchall()
+        conn.close()
+        cols = ["metric","date","current","d7","vs30d","percentile","alert","pattern","source","notes"]
+        return {"entries": [dict(zip(cols, r)) for r in rows]}
+    except Exception as e:
+        return {"entries": [], "error": str(e)}
 
 # ─── Trade Log ─────────────────────────────────────────────────────────────
 
