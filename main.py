@@ -743,6 +743,26 @@ def get(live, key):
     print(f"[metrics] {key}: MOCK fallback")
     return MOCK[key]
 
+from datetime import datetime, timezone, timedelta
+
+EST = timezone(timedelta(hours=-5))  # use -4 for EDT if you want to follow DST
+
+def _last_10am_est() -> datetime:
+    """Returns the most recent 10AM EST as a UTC-aware datetime."""
+    now_est = datetime.now(EST)
+    today_10am = now_est.replace(hour=10, minute=0, second=0, microsecond=0)
+    if now_est < today_10am:
+        # haven't hit 10am today yet — last refresh was yesterday at 10am
+        return today_10am - timedelta(days=1)
+    return today_10am
+
+def _cache_is_stale(cache: dict) -> bool:
+    if not cache["data"]:
+        return True
+    last_refresh = _last_10am_est()
+    cache_time = datetime.fromtimestamp(cache["ts"], tz=timezone.utc)
+    return cache_time < last_refresh
+
 
 # ─── Override helpers ──────────────────────────────────────────────────────
 
@@ -872,7 +892,7 @@ def _build_metrics(cg: dict) -> dict:
     }
 def _build_metrics_cached(cg: dict) -> dict:
     now = time.time()
-    if _metrics_cache["data"] and now - _metrics_cache["ts"] < METRICS_CACHE_TTL:
+    if not _cache_is_stale(_metrics_cache):
         return _metrics_cache["data"]
     result = _build_metrics(cg)
     _metrics_cache["data"] = result
