@@ -907,32 +907,34 @@ def _history_to_metric(metric: str, history: dict) -> dict:
 
 def _build_metrics(cg: dict) -> dict:
     """Fetch and format all metrics. Used by /metrics, /summary, /causal."""
-    # netflow_raw  = fetch_exchange_netflow()   # commented out — 401
-    # realized_raw = fetch_realized_cap(...)    # commented out — 401
+    # These four always prefer manual history over live API
     netflow_history  = _latest_from_history("exchange_netflow")
     realized_history = _latest_from_history("realized_cap")
-    cme_raw = fetch_cme_basis().get("cme_basis")
+    etf_history      = _latest_from_history("etf_flow")
+    lth_history      = _latest_from_history("lth_supply")
+
+    cme_raw       = fetch_cme_basis().get("cme_basis")
     if cme_raw and "error" in cme_raw:
         print(f"[cme_basis] error: {cme_raw['error']}")
-        cme_raw = None  # fall back to MOCK
+        cme_raw = None
     funding_raw      = fetch_funding(markets=cg["derivatives"])
     oi_raw           = fetch_open_interest(markets=cg["derivatives"])
-    etf_raw          = fetch_etf_flow()
-    lth_raw          = fetch_lth_supply()
+    etf_raw          = fetch_etf_flow() if not etf_history else None
+    lth_raw          = fetch_lth_supply() if not lth_history else None
     price_raw, volume_raw = fetch_price_and_volume(
         chart=cg["chart"], ohlcv=cg["ohlcv"])
     stablecoin_raw = fetch_stablecoin_supply().get("stablecoin_supply")
     dominance_raw  = fetch_btc_dominance().get("btc_dominance")
 
     result = {
-        "etf_flow":          format_etf_flow(**get(etf_raw, "etf_flow")),
+        "etf_flow":          _history_to_metric("etf_flow", etf_history)             if etf_history      else format_etf_flow(**get(etf_raw, "etf_flow")),
         "funding":           format_funding(**get(funding_raw, "funding")),
         "open_interest":     format_open_interest(**get(oi_raw, "open_interest")),
-        "exchange_netflow":  _history_to_metric("exchange_netflow", netflow_history) if netflow_history else format_exchange_netflow(**get(None, "exchange_netflow")),
+        "exchange_netflow":  _history_to_metric("exchange_netflow", netflow_history)  if netflow_history  else format_exchange_netflow(**get(None, "exchange_netflow")),
         "volume":            format_volume(**get(volume_raw, "volume")),
         "price_move":        format_price_move(**get(price_raw, "price_move")),
-        "realized_cap":      _history_to_metric("realized_cap", realized_history) if realized_history else format_realized_cap(**get(None, "realized_cap")),
-        "lth_supply":        format_lth_supply(**get(lth_raw, "lth_supply")),
+        "realized_cap":      _history_to_metric("realized_cap", realized_history)    if realized_history else format_realized_cap(**get(None, "realized_cap")),
+        "lth_supply":        _history_to_metric("lth_supply", lth_history)            if lth_history      else format_lth_supply(**get(lth_raw, "lth_supply")),
         "cme_basis":         format_cme_basis(**get(cme_raw, "cme_basis")),
         "stablecoin_supply": format_stablecoin_supply(**get(stablecoin_raw, "stablecoin_supply")),
         "btc_dominance":     format_btc_dominance(**get(dominance_raw, "btc_dominance")),
