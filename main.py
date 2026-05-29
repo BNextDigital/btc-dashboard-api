@@ -911,7 +911,10 @@ def _build_metrics(cg: dict) -> dict:
     # realized_raw = fetch_realized_cap(...)    # commented out — 401
     netflow_history  = _latest_from_history("exchange_netflow")
     realized_history = _latest_from_history("realized_cap")
-    cme_raw          = fetch_cme_basis().get("cme_basis")
+    cme_raw = fetch_cme_basis().get("cme_basis")
+    if cme_raw and "error" in cme_raw:
+        print(f"[cme_basis] error: {cme_raw['error']}")
+        cme_raw = None  # fall back to MOCK
     funding_raw      = fetch_funding(markets=cg["derivatives"])
     oi_raw           = fetch_open_interest(markets=cg["derivatives"])
     etf_raw          = fetch_etf_flow()
