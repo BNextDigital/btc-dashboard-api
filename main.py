@@ -766,7 +766,7 @@ def _cache_is_stale(cache: dict) -> bool:
 
 # ─── Override helpers ──────────────────────────────────────────────────────
 
-OVERRIDE_FILE = "manual_overrides.json"
+OVERRIDE_FILE = os.path.join(DATA_DIR, "manual_overrides.json")
 
 OVERRIDEABLE_METRICS = {
     "exchange_netflow",
