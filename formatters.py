@@ -66,43 +66,67 @@ def format_etf_flow(
     percentile_90d: float,
     **kwargs,
 ) -> dict:
-    ratio = last_7d_sum / avg_30d if avg_30d else 0
-
+    ratio       = last_7d_sum / avg_30d if avg_30d else 0
     alert       = kwargs.get("_alert_override")
     alert_level = kwargs.get("_alert_level_override")
-    current_str = kwargs.get("_current_str")
     aum_total   = kwargs.get("_aum_total")
 
     if not alert:
-        if percentile_90d > 90:
-            alert = "Extreme inflow"
-        elif ratio > 2.0:
-            alert = "Strong acceleration"
-        elif ratio > 1.5:
-            alert = "Flow acceleration"
-        else:
-            alert = "—"
-
+        if percentile_90d > 90:   alert = "Extreme inflow"
+        elif ratio > 2.0:         alert = "Strong acceleration"
+        elif ratio > 1.5:         alert = "Flow acceleration"
+        else:                     alert = "—"
     if not alert_level:
         alert_level = _classify_alert(alert)
 
-    if aum_total:
-        current_str = f"${aum_total/1e9:.1f}B AUM"
-    elif not current_str or current_str in ("+~$0", "+$0", "$0"):
-        current_str = _format_money(current_daily)
+    # Flow card — directional signal only, no AUM
+    flow_str = _format_money(current_daily) if current_daily else "—"
 
-    aum_str = f"${aum_total/1e9:.1f}B AUM" if aum_total else _format_money(last_7d_sum)
     return {
         "name":        "ETF Flow",
         "category":    "Flow",
-        "current":     current_str,
+        "current":     flow_str,
         "current_dir": "up" if current_daily >= 0 else "down",
-        "d7":          aum_str,
+        "d7":          _format_money(last_7d_sum) if last_7d_sum else "—",
         "vs30d":       _format_pct_change(ratio - 1) if ratio else "—",
         "percentile":  round(percentile_90d),
         "alert":       alert,
         "alert_level": alert_level,
-        "pattern":     "Flow acceleration" if (ratio > 1.5 and alert not in ("—", None)) else "—",
+        "pattern":     "Flow acceleration" if ratio > 1.5 else "—",
+        "spark":       kwargs.get("_spark", []),
+    }
+
+
+def format_etf_aum(
+    current_daily: float,
+    last_7d_sum: float,
+    avg_30d: float,
+    percentile_90d: float,
+    **kwargs,
+) -> dict:
+    aum_total = kwargs.get("_aum_total")
+    if not aum_total:
+        return None
+
+    aum_str     = f"${aum_total / 1e9:.1f}B"
+    percentile  = round(percentile_90d)
+
+    if percentile >= 90:   alert, alert_level = "AUM at 90d high", "extreme"
+    elif percentile >= 70: alert, alert_level = "Elevated AUM", "notable"
+    elif percentile <= 20: alert, alert_level = "AUM near 90d low", "notable"
+    else:                  alert, alert_level = "—", "none"
+
+    return {
+        "name":        "ETF AUM",
+        "category":    "Flow",
+        "current":     aum_str,
+        "current_dir": "up" if (last_7d_sum or 0) >= 0 else "down",
+        "d7":          _format_money(last_7d_sum) if last_7d_sum else "—",
+        "vs30d":       f"${avg_30d / 1e9:.1f}B 30d avg" if avg_30d else "—",
+        "percentile":  percentile,
+        "alert":       alert,
+        "alert_level": alert_level,
+        "pattern":     f"Total AUM across IBIT, FBTC, ARKB, BITB + 4 others",
         "spark":       kwargs.get("_spark", []),
     }
 
