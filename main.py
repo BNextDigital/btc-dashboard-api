@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 
 
 from formatters import (
-    format_etf_flow, format_funding, format_open_interest,
+    format_etf_flow, format_etf_aum, format_funding, format_open_interest,
     format_exchange_netflow, format_volume, format_price_move,
     format_realized_cap, format_lth_supply,
 )
@@ -924,7 +924,8 @@ def _build_metrics(cg: dict) -> dict:
         chart=cg["chart"], ohlcv=cg["ohlcv"])
     stablecoin_raw = fetch_stablecoin_supply().get("stablecoin_supply")
     dominance_raw  = fetch_btc_dominance().get("btc_dominance")
-    return {
+
+    result = {
         "etf_flow":          format_etf_flow(**get(etf_raw, "etf_flow")),
         "funding":           format_funding(**get(funding_raw, "funding")),
         "open_interest":     format_open_interest(**get(oi_raw, "open_interest")),
@@ -937,6 +938,12 @@ def _build_metrics(cg: dict) -> dict:
         "stablecoin_supply": format_stablecoin_supply(**get(stablecoin_raw, "stablecoin_supply")),
         "btc_dominance":     format_btc_dominance(**get(dominance_raw, "btc_dominance")),
     }
+
+    etf_aum = format_etf_aum(**get(etf_raw, "etf_flow")) if etf_raw else None
+    if etf_aum:
+        result["etf_aum"] = etf_aum
+
+    return result
 def _build_metrics_cached(cg: dict) -> dict:
     now = time.time()
     if not _cache_is_stale(_metrics_cache):
