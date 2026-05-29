@@ -764,12 +764,11 @@ def _cache_is_stale(cache: dict) -> bool:
     return cache_time < last_refresh
 
 def _latest_from_history(metric: str) -> dict | None:
-    """Fetch the most recent entry for a metric from manual_history.db."""
     try:
         conn = sqlite3.connect(os.path.join(DATA_DIR, "manual_history.db"))
         row = conn.execute("""
             SELECT current, d7, vs30d, percentile, alert, pattern, source, notes
-            FROM manual_history
+            FROM metric_history
             WHERE metric = ?
             ORDER BY date DESC
             LIMIT 1
@@ -1434,9 +1433,9 @@ def get_latest_manual_history():
         conn = sqlite3.connect(os.path.join(DATA_DIR, "manual_history.db"))
         rows = conn.execute("""
             SELECT metric, date, current, d7, vs30d, percentile, alert, pattern, source, notes
-            FROM manual_history
+            FROM metric_history
             WHERE (metric, date) IN (
-                SELECT metric, MAX(date) FROM manual_history GROUP BY metric
+                SELECT metric, MAX(date) FROM metric_history GROUP BY metric
             )
             ORDER BY metric
         """).fetchall()
