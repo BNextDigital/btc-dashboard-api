@@ -187,8 +187,8 @@ def _fetch_macro_history_rows(n_days: int = 95) -> list[dict]:
 
 # ── Data fetchers ────────────────────────────────────────────────────────────
 
-def _fetch_yfinance_bulk(n_days: int = 200) -> dict:
-    """Download n_days of daily data for all tickers."""
+def _fetch_yfinance_bulk(n_days: int = 300) -> dict:
+    """Download n_days of daily data. 300d ensures Brent futures have enough history for 200d SMA."""
     tickers = list(YF_TICKERS.values())
     period = f"{n_days}d"
     try:
@@ -226,7 +226,7 @@ def _fetch_fred_hy_oas(n_days: int = 200) -> dict:
         f"&file_type=json"
     )
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         obs = resp.json().get("observations", [])
         values = []
@@ -467,8 +467,8 @@ def _build_macro_metrics() -> dict:
     if _macro_cache["data"] and (now - _macro_cache["ts"]) < MACRO_CACHE_TTL:
         return _macro_cache["data"]
 
-    yf_data  = _fetch_yfinance_bulk(n_days=200)
-    fred_data = _fetch_fred_hy_oas(n_days=200)
+    yf_data  = _fetch_yfinance_bulk(n_days=300)
+    fred_data = _fetch_fred_hy_oas(n_days=300)
 
     yields = {
         "1y":  _fmt_yield_card("yield_1y",  yf_data.get("yield_1y"),  "1Y"),
