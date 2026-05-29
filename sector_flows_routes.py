@@ -49,18 +49,36 @@ FLOW_CACHE_TTL = 300  # 5 min
 
 
 def _fetch_sector_data(n_days: int = 300) -> dict:
-    """Fetch OHLCV data for all sectors."""
-    result = {}
-    for key, (ticker, name) in SECTORS.items():
-        try:
-            df = yf.download(ticker, period=f"{n_days}d", auto_adjust=True, progress=False)
-            if df is not None and len(df) > 0:
-                result[key] = df
-            else:
-                result[key] = None
-        except Exception as e:
-            print(f"Error fetching {ticker}: {e}")
-            result[key] = None
+    """Fetch OHLCV data for all sectors using bulk download."""
+    tickers = [v[0] for v in SECTORS.values()]
+    keys = list(SECTORS.keys())
+    result = {k: None for k in keys}
+
+    try:
+        raw = yf.download(
+            tickers, period=f"{n_days}d",
+            auto_adjust=True, progress=False,
+            threads=True, group_by="ticker"
+        )
+
+        for key, (ticker, _) in SECTORS.items():
+            try:
+                # Multi-ticker download nests columns under ticker symbol
+                if ticker in raw.columns.get_level_values(0):
+                    df = raw[ticker].dropna(how="all")
+                else:
+                    # Fallback: single-ticker returns flat DataFrame
+                    df = raw.dropna(how="all")
+
+                if df is not None and len(df) > 20:
+                    result[key] = df
+                else:
+                    print(f"Insufficient data for {ticker}: {len(df) if df is not None else 0} rows")
+            except Exception as e:
+                print(f"Parsing error for {ticker}: {e}")
+    except Exception as e:
+        print(f"Bulk download error: {e}")
+
     return result
 
 
