@@ -80,6 +80,7 @@ app.add_middleware(
 )
 
 app.include_router(macro_router)
+app.include_router(sector_flows_router)
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
 
 DB_PATH = DATA_DIR / "basis_history.db"
