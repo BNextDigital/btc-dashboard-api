@@ -494,15 +494,36 @@ def _spread_label(y2, y10) -> str:
     return f"Steep ({spread_bp:+d}bp)"
 
 # ── Cache ────────────────────────────────────────────────────────────────────
+from datetime import datetime, timezone, timedelta
+
+EST = timezone(timedelta(hours=-5))  # use -4 for EDT if you want to follow DST
+
+def _last_10am_est() -> datetime:
+    """Returns the most recent 10AM EST as a UTC-aware datetime."""
+    now_est = datetime.now(EST)
+    today_10am = now_est.replace(hour=10, minute=0, second=0, microsecond=0)
+    if now_est < today_10am:
+        # haven't hit 10am today yet — last refresh was yesterday at 10am
+        return today_10am - timedelta(days=1)
+    return today_10am
+
+def _cache_is_stale(cache: dict) -> bool:
+    if not cache["data"]:
+        return True
+    last_refresh = _last_10am_est()
+    cache_time = datetime.fromtimestamp(cache["ts"], tz=timezone.utc)
+    return cache_time < last_refresh
+
+
 _macro_cache: dict = {"data": None, "ts": 0.0}
-MACRO_CACHE_TTL = 300  # 5 minutes
+
 
 
 def _build_macro_metrics() -> dict:
     global _macro_cache
     now = time.time()
-    if _macro_cache["data"] and (now - _macro_cache["ts"]) < MACRO_CACHE_TTL:
-        return _macro_cache["data"]
+    if not _cache_is_stale(_macro_cache):
+      return _macro_cache["data"]
 
     yf_data  = _fetch_yfinance_bulk(n_days=300)
     fred_data = _fetch_fred_hy_oas(n_days=300)
