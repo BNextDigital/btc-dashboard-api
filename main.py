@@ -715,29 +715,6 @@ def fetch_crypto_proxies() -> dict:
         print(f"[crypto_proxies] fetch error: {e}")
         return {"crypto_proxies": None}
 
-# ─── Mock fallbacks ────────────────────────────────────────────────────────
-
-MOCK = {
-    "etf_flow":         dict(current_daily=450_000_000, last_7d_sum=2_100_000_000, avg_30d=1_135_000_000, percentile_90d=88),
-    "funding":          dict(current_rate=0.00035, avg_7d=0.00021, avg_30d=0.000126, percentile_90d=92),
-    "open_interest":    dict(current_usd=12_400_000_000, growth_7d_pct=0.18, growth_30d_pct=0.25, percentile_90d=85),
-    "exchange_netflow": dict(current_btc=-12_000, sum_7d_btc=-28_000, avg_30d_btc=16_500, percentile_90d=20),
-    "volume":           dict(ratio_30d=1.6, ratio_7d=1.2, percentile_90d=87, price_change_pct=0.052),
-    "price_move":       dict(daily_change_pct=0.052, week_change_pct=0.088, avg_daily_30d=0.031, percentile_90d=80),
-    "realized_cap":     dict(growth_pct=0.028, growth_7d_pct=0.019, avg_30d_pct=0.006, percentile_90d=76),
-    "lth_supply":       dict(change_7d_btc=45_000, change_30d_btc=120_000, change_30d_pct=0.008, percentile_90d=72),
-    "cme_basis":        dict(annualized=8.5, raw_basis=0.35, futures_px=95000.0, spot_px=94667.0, days_to_exp=30),
-    "stablecoin_supply": dict(usdt=143_000_000_000, usdc=60_000_000_000),
-    "btc_dominance": dict(dominance_pct=62.5, btc_market_cap=1_850_000_000_000, total_market_cap=2_960_000_000_000),
-}
-
-
-def get(live, key):
-    if live is not None:
-        print(f"[metrics] {key}: LIVE")
-        return live
-    print(f"[metrics] {key}: MOCK fallback")
-    return MOCK[key]
 
 from datetime import datetime, timezone, timedelta
 
@@ -905,6 +882,51 @@ def _history_to_metric(metric: str, history: dict) -> dict:
     }
 
 
+def get(live, key):
+    if live is not None:
+        print(f"[metrics] {key}: LIVE")
+        return live
+    print(f"[metrics] {key}: UNAVAILABLE — no mock fallback")
+    return None
+
+
+def _safe_format(formatter, data, key):
+    """Call formatter with live data, or return an error metric if data is None."""
+    if data is None:
+        return {
+            "name":         _metric_display_name(key),
+            "category":     _metric_category(key),
+            "current":      "–",
+            "current_dir":  "flat",
+            "d7":           "–",
+            "vs30d":        "–",
+            "percentile":   0,
+            "alert":        "No data",
+            "alert_level":  "none",
+            "pattern":      "Live API unavailable",
+            "spark":        [],
+            "_unavailable": True,
+        }
+    try:
+        return formatter(**data)
+    except Exception as e:
+        print(f"[metrics] {key} format error: {e}")
+        return {
+            "name":         _metric_display_name(key),
+            "category":     _metric_category(key),
+            "current":      "–",
+            "current_dir":  "flat",
+            "d7":           "–",
+            "vs30d":        "–",
+            "percentile":   0,
+            "alert":        "Error",
+            "alert_level":  "none",
+            "pattern":      str(e),
+            "spark":        [],
+            "_unavailable": True,
+        }
+
+
 def _build_metrics(cg: dict) -> dict:
     """Fetch and format all metrics. Used by /metrics, /summary, /causal."""
     # These four always prefer manual history over live API
@@ -913,31 +935,32 @@ def _build_metrics(cg: dict) -> dict:
     etf_history      = _latest_from_history("etf_flow")
     lth_history      = _latest_from_history("lth_supply")
 
-    cme_raw       = fetch_cme_basis().get("cme_basis")
+    cme_raw = fetch_cme_basis().get("cme_basis")
     if cme_raw and "error" in cme_raw:
         print(f"[cme_basis] error: {cme_raw['error']}")
         cme_raw = None
-    funding_raw      = fetch_funding(markets=cg["derivatives"])
-    oi_raw           = fetch_open_interest(markets=cg["derivatives"])
-    etf_raw          = fetch_etf_flow() if not etf_history else None
-    lth_raw          = fetch_lth_supply() if not lth_history else None
+
+    funding_raw        = fetch_funding(markets=cg["derivatives"])
+    oi_raw             = fetch_open_interest(markets=cg["derivatives"])
+    etf_raw            = fetch_etf_flow() if not etf_history else None
+    lth_raw            = fetch_lth_supply() if not lth_history else None
     price_raw, volume_raw = fetch_price_and_volume(
         chart=cg["chart"], ohlcv=cg["ohlcv"])
-    stablecoin_raw = fetch_stablecoin_supply().get("stablecoin_supply")
-    dominance_raw  = fetch_btc_dominance().get("btc_dominance")
+    stablecoin_raw     = fetch_stablecoin_supply().get("stablecoin_supply")
+    dominance_raw      = fetch_btc_dominance().get("btc_dominance")
 
     result = {
-        "etf_flow":          _history_to_metric("etf_flow", etf_history)             if etf_history      else format_etf_flow(**get(etf_raw, "etf_flow")),
-        "funding":           format_funding(**get(funding_raw, "funding")),
-        "open_interest":     format_open_interest(**get(oi_raw, "open_interest")),
-        "exchange_netflow":  _history_to_metric("exchange_netflow", netflow_history)  if netflow_history  else format_exchange_netflow(**get(None, "exchange_netflow")),
-        "volume":            format_volume(**get(volume_raw, "volume")),
-        "price_move":        format_price_move(**get(price_raw, "price_move")),
-        "realized_cap":      _history_to_metric("realized_cap", realized_history)    if realized_history else format_realized_cap(**get(None, "realized_cap")),
-        "lth_supply":        _history_to_metric("lth_supply", lth_history)            if lth_history      else format_lth_supply(**get(lth_raw, "lth_supply")),
-        "cme_basis":         format_cme_basis(**get(cme_raw, "cme_basis")),
-        "stablecoin_supply": format_stablecoin_supply(**get(stablecoin_raw, "stablecoin_supply")),
-        "btc_dominance":     format_btc_dominance(**get(dominance_raw, "btc_dominance")),
+        "etf_flow":          _history_to_metric("etf_flow", etf_history)            if etf_history     else _safe_format(format_etf_flow,        get(etf_raw,        "etf_flow"),         "etf_flow"),
+        "funding":           _safe_format(format_funding,           get(funding_raw,     "funding"),          "funding"),
+        "open_interest":     _safe_format(format_open_interest,     get(oi_raw,          "open_interest"),    "open_interest"),
+        "exchange_netflow":  _history_to_metric("exchange_netflow", netflow_history)  if netflow_history else _safe_format(format_exchange_netflow, get(None,            "exchange_netflow"), "exchange_netflow"),
+        "volume":            _safe_format(format_volume,            get(volume_raw,      "volume"),           "volume"),
+        "price_move":        _safe_format(format_price_move,        get(price_raw,       "price_move"),       "price_move"),
+        "realized_cap":      _history_to_metric("realized_cap",     realized_history)  if realized_history else _safe_format(format_realized_cap,   get(None,            "realized_cap"),    "realized_cap"),
+        "lth_supply":        _history_to_metric("lth_supply",       lth_history)       if lth_history      else _safe_format(format_lth_supply,     get(lth_raw,         "lth_supply"),      "lth_supply"),
+        "cme_basis":         _safe_format(format_cme_basis,         get(cme_raw,         "cme_basis"),        "cme_basis"),
+        "stablecoin_supply": _safe_format(format_stablecoin_supply, get(stablecoin_raw,  "stablecoin_supply"),"stablecoin_supply"),
+        "btc_dominance":     _safe_format(format_btc_dominance,     get(dominance_raw,   "btc_dominance"),    "btc_dominance"),
     }
 
     etf_aum = format_etf_aum(**get(etf_raw, "etf_flow")) if etf_raw else None
@@ -945,6 +968,7 @@ def _build_metrics(cg: dict) -> dict:
         result["etf_aum"] = etf_aum
 
     return result
+    
 def _build_metrics_cached(cg: dict) -> dict:
     now = time.time()
     if not _cache_is_stale(_metrics_cache):
