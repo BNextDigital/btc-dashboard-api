@@ -890,12 +890,30 @@ def _apply_overrides(metrics: dict) -> dict:
 
 
 # ─── Shared metric builder ─────────────────────────────────────────────────
+def _history_to_metric(metric: str, history: dict) -> dict:
+    """Wrap a history row into a metric dict shape, skipping the formatter."""
+    return {
+        "name":                 _metric_display_name(metric),
+        "category":             _metric_category(metric),
+        "current":              history.get("current", "—"),
+        "current_dir":          _infer_direction(history.get("current", "")),
+        "d7":                   history.get("d7", "—"),
+        "vs30d":                history.get("vs30d", "—"),
+        "percentile":           history.get("percentile", 0),
+        "alert":                history.get("alert", "—"),
+        "alert_level":          _classify_alert_level(history.get("alert", "—")),
+        "pattern":              history.get("pattern", "—"),
+        "source":               history.get("source", "Manual history"),
+        "spark":                [],
+        "_is_history_fallback": True,
+    }
+
 
 def _build_metrics(cg: dict) -> dict:
     """Fetch and format all metrics. Used by /metrics, /summary, /causal."""
    # netflow_raw           = fetch_exchange_netflow()
-    netflow_raw  = _latest_from_history("exchange_netflow")
-    realized_raw = _latest_from_history("realized_cap")
+   netflow_history  = _latest_from_history("exchange_netflow")
+    realized_history = _latest_from_history("realized_cap")
     cme_raw               = fetch_cme_basis().get("cme_basis")
    # realized_raw          = fetch_realized_cap(chart=cg["chart"])
     funding_raw           = fetch_funding(markets=cg["derivatives"])
@@ -911,10 +929,10 @@ def _build_metrics(cg: dict) -> dict:
         "etf_flow":         format_etf_flow(**get(etf_raw,      "etf_flow")),
         "funding":          format_funding(**get(funding_raw,    "funding")),
         "open_interest":    format_open_interest(**get(oi_raw,   "open_interest")),
-        "exchange_netflow": format_exchange_netflow(**get(netflow_raw, "exchange_netflow")),
+        "exchange_netflow": _history_to_metric("exchange_netflow", netflow_history) if netflow_history else format_exchange_netflow(**get(None, "exchange_netflow")),
         "volume":           format_volume(**get(volume_raw,      "volume")),
         "price_move":       format_price_move(**get(price_raw,   "price_move")),
-        "realized_cap":     format_realized_cap(**get(realized_raw, "realized_cap")),
+        "realized_cap":     _history_to_metric("realized_cap", realized_history)   if realized_history else format_realized_cap(**get(None, "realized_cap")),
         "lth_supply":       format_lth_supply(**get(lth_raw,    "lth_supply")),
         "cme_basis":        format_cme_basis(**get(cme_raw,     "cme_basis")),
         "stablecoin_supply": format_stablecoin_supply(**get(stablecoin_raw, "stablecoin_supply")),
@@ -928,6 +946,8 @@ def _build_metrics_cached(cg: dict) -> dict:
     _metrics_cache["data"] = result
     _metrics_cache["ts"] = now
     return result
+
+
 
 # ─── Routes ────────────────────────────────────────────────────────────────
 
