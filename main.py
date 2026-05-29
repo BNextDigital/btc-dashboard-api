@@ -763,6 +763,34 @@ def _cache_is_stale(cache: dict) -> bool:
     cache_time = datetime.fromtimestamp(cache["ts"], tz=timezone.utc)
     return cache_time < last_refresh
 
+def _latest_from_history(metric: str) -> dict | None:
+    """Fetch the most recent entry for a metric from manual_history.db."""
+    try:
+        conn = sqlite3.connect(os.path.join(DATA_DIR, "manual_history.db"))
+        row = conn.execute("""
+            SELECT current, d7, vs30d, percentile, alert, pattern, source, notes
+            FROM manual_history
+            WHERE metric = ?
+            ORDER BY date DESC
+            LIMIT 1
+        """, (metric,)).fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "current":    row[0],
+            "d7":         row[1],
+            "vs30d":      row[2],
+            "percentile": row[3],
+            "alert":      row[4],
+            "pattern":    row[5],
+            "source":     row[6],
+            "notes":      row[7],
+        }
+    except Exception as e:
+        print(f"[history fallback] {metric}: {e}")
+        return None
+
 
 # ─── Override helpers ──────────────────────────────────────────────────────
 
@@ -867,8 +895,8 @@ def _apply_overrides(metrics: dict) -> dict:
 def _build_metrics(cg: dict) -> dict:
     """Fetch and format all metrics. Used by /metrics, /summary, /causal."""
    # netflow_raw           = fetch_exchange_netflow()
-    netflow_raw           = None
-    realized_raw          = None
+    netflow_raw  = _latest_from_history("exchange_netflow")
+    realized_raw = _latest_from_history("realized_cap")
     cme_raw               = fetch_cme_basis().get("cme_basis")
    # realized_raw          = fetch_realized_cap(chart=cg["chart"])
     funding_raw           = fetch_funding(markets=cg["derivatives"])
