@@ -16,6 +16,20 @@ import pandas as pd
 
 sector_flows_router = APIRouter(prefix="/sector-flows")
 
+def _sanitize(val):
+    """Convert NaN/Inf to None for JSON serialization."""
+    if val is None:
+        return None
+    try:
+        import math
+        if math.isnan(val) or math.isinf(val):
+            return None
+        return val
+    except (TypeError, ValueError):
+        return None
+
+
+
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 
 # Sector definitions (ticker, display name, asset_class)
@@ -205,12 +219,12 @@ def _build_sector_flows() -> dict:
         result["sectors"][sector_key] = {
             "name": name,
             "ticker": ticker,
-            "current": current,
-            "change_5d": change_5d,
-            "mfi": mfi,              # Money Flow Index (0-100)
-            "obv": obv,              # On-Balance Volume (-100 to +100)
-            "volume_momentum": vol_mom,  # 5d vol / 20d vol
-            "relative_performance": rel_perf,  # vs S&P 500
+            "current": _sanitize(current),
+            "change_5d": _sanitize(change_5d),
+            "mfi": _sanitize(mfi),
+            "obv": _sanitize(obv),
+            "volume_momentum": _sanitize(vol_mom),
+            "relative_performance": _sanitize(rel_perf),
             "flow_signal": flow_signal,
         }
     
