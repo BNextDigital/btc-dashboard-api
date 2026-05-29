@@ -1722,3 +1722,9 @@ def debug_funding():
         "btc_perp_count": len(btc_perps),
         "sample": [{"market": m.get("market"), "symbol": m.get("symbol"), "funding_rate": m.get("funding_rate"), "oi": m.get("open_interest")} for m in btc_perps[:10]]
     }
+
+@app.get("/cache/flush")
+def flush_metrics_cache():
+    global _metrics_cache
+    _metrics_cache = {"data": None, "ts": 0.0}
+    return {"flushed": True, "cache": "metrics"}
