@@ -35,6 +35,10 @@ YF_TICKERS = {
     "vxn":       "^VXN",
     "sp500":     "^GSPC",
     "brent":     "BZ=F",
+    "gold":      "GC=F",
+    "silver":    "SI=F",
+    "platinum":  "PL=F",
+    "copper":    "HG=F",
 }
 
 # FRED series
@@ -55,7 +59,11 @@ def _ensure_schema_upgraded():
     new_columns = [
         "nasdaq100", "nasdaq100_sma20", "nasdaq100_sma50", "nasdaq100_sma200",
         "vxn", "sp500", "sp500_sma20", "sp500_sma50", "sp500_sma200",
-        "brent", "brent_sma20", "brent_sma50", "brent_sma200"
+        "brent", "brent_sma20", "brent_sma50", "brent_sma200",
+        "gold", "gold_sma20", "gold_sma50", "gold_sma200",
+        "silver", "silver_sma20", "silver_sma50", "silver_sma200",
+        "platinum", "platinum_sma20", "platinum_sma50", "platinum_sma200",
+        "copper", "copper_sma20", "copper_sma50", "copper_sma200"
     ]
     
     # Add missing columns
@@ -102,6 +110,22 @@ def _macro_db():
             brent_sma20 REAL,
             brent_sma50 REAL,
             brent_sma200 REAL,
+            gold        REAL,
+            gold_sma20  REAL,
+            gold_sma50  REAL,
+            gold_sma200 REAL,
+            silver      REAL,
+            silver_sma20 REAL,
+            silver_sma50 REAL,
+            silver_sma200 REAL,
+            platinum    REAL,
+            platinum_sma20 REAL,
+            platinum_sma50 REAL,
+            platinum_sma200 REAL,
+            copper      REAL,
+            copper_sma20 REAL,
+            copper_sma50 REAL,
+            copper_sma200 REAL,
             stored_at   TEXT
         )
     """)
@@ -124,8 +148,12 @@ def _store_macro_snapshot(snap: dict):
                 (date, yield_1y, yield_2y, yield_3y, yield_5y, yield_10y,
                  dxy, vix, hy_oas, nasdaq100, nasdaq100_sma20, nasdaq100_sma50, nasdaq100_sma200,
                  vxn, sp500, sp500_sma20, sp500_sma50, sp500_sma200,
-                 brent, brent_sma20, brent_sma50, brent_sma200, stored_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 brent, brent_sma20, brent_sma50, brent_sma200,
+                 gold, gold_sma20, gold_sma50, gold_sma200,
+                 silver, silver_sma20, silver_sma50, silver_sma200,
+                 platinum, platinum_sma20, platinum_sma50, platinum_sma200,
+                 copper, copper_sma20, copper_sma50, copper_sma200, stored_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(date) DO UPDATE SET
                 yield_1y=excluded.yield_1y, yield_2y=excluded.yield_2y,
                 yield_3y=excluded.yield_3y, yield_5y=excluded.yield_5y,
@@ -137,7 +165,16 @@ def _store_macro_snapshot(snap: dict):
                 sp500_sma20=excluded.sp500_sma20, sp500_sma50=excluded.sp500_sma50,
                 sp500_sma200=excluded.sp500_sma200, brent=excluded.brent,
                 brent_sma20=excluded.brent_sma20, brent_sma50=excluded.brent_sma50,
-                brent_sma200=excluded.brent_sma200, stored_at=excluded.stored_at
+                brent_sma200=excluded.brent_sma200,
+                gold=excluded.gold, gold_sma20=excluded.gold_sma20,
+                gold_sma50=excluded.gold_sma50, gold_sma200=excluded.gold_sma200,
+                silver=excluded.silver, silver_sma20=excluded.silver_sma20,
+                silver_sma50=excluded.silver_sma50, silver_sma200=excluded.silver_sma200,
+                platinum=excluded.platinum, platinum_sma20=excluded.platinum_sma20,
+                platinum_sma50=excluded.platinum_sma50, platinum_sma200=excluded.platinum_sma200,
+                copper=excluded.copper, copper_sma20=excluded.copper_sma20,
+                copper_sma50=excluded.copper_sma50, copper_sma200=excluded.copper_sma200,
+                stored_at=excluded.stored_at
         """, (
             today,
             snap.get("yield_1y"), snap.get("yield_2y"),
@@ -495,6 +532,10 @@ def _build_macro_metrics() -> dict:
         "vxn":       _fmt_vix_derivative(yf_data.get("vxn")),
         "sp500":     _fmt_equity_sma_card("S&P 500", yf_data.get("sp500")),
         "brent":     _fmt_equity_sma_card("Brent Crude", yf_data.get("brent")),
+        "gold":      _fmt_equity_sma_card("Gold", yf_data.get("gold")),
+        "silver":    _fmt_equity_sma_card("Silver", yf_data.get("silver")),
+        "platinum":  _fmt_equity_sma_card("Platinum", yf_data.get("platinum")),
+        "copper":    _fmt_equity_sma_card("Copper", yf_data.get("copper")),
     }
 
     # Persist snapshot
@@ -520,6 +561,22 @@ def _build_macro_metrics() -> dict:
         "brent_sma20": result["brent"].get("sma20"),
         "brent_sma50": result["brent"].get("sma50"),
         "brent_sma200": result["brent"].get("sma200"),
+        "gold":      result["gold"].get("current"),
+        "gold_sma20": result["gold"].get("sma20"),
+        "gold_sma50": result["gold"].get("sma50"),
+        "gold_sma200": result["gold"].get("sma200"),
+        "silver":    result["silver"].get("current"),
+        "silver_sma20": result["silver"].get("sma20"),
+        "silver_sma50": result["silver"].get("sma50"),
+        "silver_sma200": result["silver"].get("sma200"),
+        "platinum":  result["platinum"].get("current"),
+        "platinum_sma20": result["platinum"].get("sma20"),
+        "platinum_sma50": result["platinum"].get("sma50"),
+        "platinum_sma200": result["platinum"].get("sma200"),
+        "copper":    result["copper"].get("current"),
+        "copper_sma20": result["copper"].get("sma20"),
+        "copper_sma50": result["copper"].get("sma50"),
+        "copper_sma200": result["copper"].get("sma200"),
     }
     _store_macro_snapshot(snap)
 
