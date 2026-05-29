@@ -157,14 +157,19 @@ def _store_macro_snapshot(snap: dict):
                 copper=excluded.copper, copper_sma20=excluded.copper_sma20,
                 copper_sma50=excluded.copper_sma50, copper_sma200=excluded.copper_sma200,
                 stored_at=excluded.stored_at
-        """, (
+       """, (
             today,
             snap.get("yield_1y"), snap.get("yield_2y"),
             snap.get("yield_3y"), snap.get("yield_5y"), snap.get("yield_10y"),
             snap.get("dxy"), snap.get("vix"), snap.get("hy_oas"),
             snap.get("nasdaq100"), snap.get("nasdaq100_sma20"), snap.get("nasdaq100_sma50"), snap.get("nasdaq100_sma200"),
-            snap.get("vxn"), snap.get("sp500"), snap.get("sp500_sma20"), snap.get("sp500_sma50"), snap.get("sp500_sma200"),
+            snap.get("vxn"),
+            snap.get("sp500"), snap.get("sp500_sma20"), snap.get("sp500_sma50"), snap.get("sp500_sma200"),
             snap.get("brent"), snap.get("brent_sma20"), snap.get("brent_sma50"), snap.get("brent_sma200"),
+            snap.get("gold"), snap.get("gold_sma20"), snap.get("gold_sma50"), snap.get("gold_sma200"),
+            snap.get("silver"), snap.get("silver_sma20"), snap.get("silver_sma50"), snap.get("silver_sma200"),
+            snap.get("platinum"), snap.get("platinum_sma20"), snap.get("platinum_sma50"), snap.get("platinum_sma200"),
+            snap.get("copper"), snap.get("copper_sma20"), snap.get("copper_sma50"), snap.get("copper_sma200"),
             datetime.utcnow().isoformat()
         ))
         conn.commit()
