@@ -203,42 +203,38 @@ init_dominance_db()
 def fetch_cme_basis() -> dict:
     try:
         import yfinance as yf
-
-        fut = yf.Ticker("BTC=F")
-        spot = yf.Ticker("BTC-USD")
-
-        fut_info = fut.info
+        fut      = yf.Ticker("BTC=F")
+        spot     = yf.Ticker("BTC-USD")
+        fut_info  = fut.info
         spot_info = spot.info
-
         futures_px = fut_info.get("regularMarketPrice") or fut_info.get("previousClose")
-        spot_px = spot_info.get("regularMarketPrice") or spot_info.get("previousClose")
-
+        spot_px    = spot_info.get("regularMarketPrice") or spot_info.get("previousClose")
         if not futures_px or not spot_px:
             return {"cme_basis": {"error": "price unavailable"}}
-
         expiry_ts = fut_info.get("expireDate")
         if expiry_ts:
-            expiry_dt = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
-            days_to_exp = max((expiry_dt - datetime.now(timezone.utc)).days, 1)
+            expiry_dt   = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
+            days_to_exp = (expiry_dt - datetime.now(timezone.utc)).days
+            if days_to_exp < 5:
+                return {"cme_basis": {"error": f"contract rolling — {days_to_exp}d to expiry, basis unreliable"}}
             annualized = ((futures_px / spot_px) - 1) * (365 / days_to_exp) * 100
         else:
             days_to_exp = 30
-            annualized = ((futures_px / spot_px) - 1) * 12 * 100
-
+            annualized  = ((futures_px / spot_px) - 1) * 12 * 100
+        if annualized > 50 or annualized < -30:
+            return {"cme_basis": {"error": f"basis out of range ({annualized:.1f}%) — data suspect"}}
         raw_basis = ((futures_px / spot_px) - 1) * 100
-
         return {
             "cme_basis": {
-                "futures_px": futures_px,
-                "spot_px": spot_px,
-                "raw_basis": raw_basis,
-                "annualized": annualized,
+                "futures_px":  futures_px,
+                "spot_px":     spot_px,
+                "raw_basis":   raw_basis,
+                "annualized":  annualized,
                 "days_to_exp": days_to_exp,
             }
         }
     except Exception as e:
         return {"cme_basis": {"error": str(e)}}
-
 
 def format_cme_basis(
     annualized: float, raw_basis: float,
