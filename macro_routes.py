@@ -624,6 +624,12 @@ def get_macro_history(days: int = 90):
     rows = _fetch_macro_history_rows(n_days=days)
     return {"rows": rows, "count": len(rows)}
 
+@macro_router.get("/cache/flush")
+def flush_macro_cache():
+    global _macro_cache
+    _macro_cache = {"data": None, "ts": 0.0}
+    return {"flushed": True, "cache": "macro"}
+
 # ── Registration (add this to the bottom of main.py) ──────────────────────
 #
 #   from macro_routes import macro_router
