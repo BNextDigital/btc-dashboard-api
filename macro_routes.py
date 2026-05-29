@@ -81,59 +81,41 @@ def _ensure_schema_upgraded():
 
 
 def _macro_db():
-    """Get or create macro_snapshots table with full schema."""
     os.makedirs(DATA_DIR, exist_ok=True)
     conn = sqlite3.connect(MACRO_DB_PATH)
-    
-    # Create table if it doesn't exist
     conn.execute("""
         CREATE TABLE IF NOT EXISTS macro_snapshots (
-            date        TEXT PRIMARY KEY,
-            yield_1y    REAL,
-            yield_2y    REAL,
-            yield_3y    REAL,
-            yield_5y    REAL,
-            yield_10y   REAL,
-            dxy         REAL,
-            vix         REAL,
-            hy_oas      REAL,
-            nasdaq100   REAL,
-            nasdaq100_sma20 REAL,
-            nasdaq100_sma50 REAL,
-            nasdaq100_sma200 REAL,
-            vxn         REAL,
-            sp500       REAL,
-            sp500_sma20 REAL,
-            sp500_sma50 REAL,
-            sp500_sma200 REAL,
-            brent       REAL,
-            brent_sma20 REAL,
-            brent_sma50 REAL,
-            brent_sma200 REAL,
-            gold        REAL,
-            gold_sma20  REAL,
-            gold_sma50  REAL,
-            gold_sma200 REAL,
-            silver      REAL,
-            silver_sma20 REAL,
-            silver_sma50 REAL,
-            silver_sma200 REAL,
-            platinum    REAL,
-            platinum_sma20 REAL,
-            platinum_sma50 REAL,
-            platinum_sma200 REAL,
-            copper      REAL,
-            copper_sma20 REAL,
-            copper_sma50 REAL,
-            copper_sma200 REAL,
-            stored_at   TEXT
+            date             TEXT PRIMARY KEY,
+            yield_1y         REAL, yield_2y  REAL, yield_3y  REAL,
+            yield_5y         REAL, yield_10y REAL,
+            dxy              REAL, vix       REAL, hy_oas    REAL,
+            nasdaq100        REAL, nasdaq100_sma20 REAL, nasdaq100_sma50 REAL, nasdaq100_sma200 REAL,
+            vxn              REAL,
+            sp500            REAL, sp500_sma20     REAL, sp500_sma50     REAL, sp500_sma200     REAL,
+            brent            REAL, brent_sma20     REAL, brent_sma50     REAL, brent_sma200     REAL,
+            gold             REAL, gold_sma20      REAL, gold_sma50      REAL, gold_sma200      REAL,
+            silver           REAL, silver_sma20    REAL, silver_sma50    REAL, silver_sma200    REAL,
+            platinum         REAL, platinum_sma20  REAL, platinum_sma50  REAL, platinum_sma200  REAL,
+            copper           REAL, copper_sma20    REAL, copper_sma50    REAL, copper_sma200    REAL,
+            stored_at        TEXT
         )
     """)
+    # Add any missing columns for existing databases
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(macro_snapshots)").fetchall()}
+    new_cols = [
+        ("nasdaq100", "REAL"), ("nasdaq100_sma20", "REAL"), ("nasdaq100_sma50", "REAL"), ("nasdaq100_sma200", "REAL"),
+        ("vxn", "REAL"),
+        ("sp500", "REAL"), ("sp500_sma20", "REAL"), ("sp500_sma50", "REAL"), ("sp500_sma200", "REAL"),
+        ("brent", "REAL"), ("brent_sma20", "REAL"), ("brent_sma50", "REAL"), ("brent_sma200", "REAL"),
+        ("gold", "REAL"), ("gold_sma20", "REAL"), ("gold_sma50", "REAL"), ("gold_sma200", "REAL"),
+        ("silver", "REAL"), ("silver_sma20", "REAL"), ("silver_sma50", "REAL"), ("silver_sma200", "REAL"),
+        ("platinum", "REAL"), ("platinum_sma20", "REAL"), ("platinum_sma50", "REAL"), ("platinum_sma200", "REAL"),
+        ("copper", "REAL"), ("copper_sma20", "REAL"), ("copper_sma50", "REAL"), ("copper_sma200", "REAL"),
+    ]
+    for col, typ in new_cols:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE macro_snapshots ADD COLUMN {col} {typ}")
     conn.commit()
-    
-    # Ensure schema is up to date (in case table exists with old schema)
-    _ensure_schema_upgraded()
-    
     return conn
 
 
