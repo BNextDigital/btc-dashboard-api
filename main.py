@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from macro_routes import macro_router
+from sector_flows_routes import sector_flows_router
 from contextlib import asynccontextmanager
 
 
