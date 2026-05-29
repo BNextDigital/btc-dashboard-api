@@ -1,22 +1,13 @@
 """
-macro_routes.py (EXTENDED) — Add these routes to your existing main.py
+macro_routes.py (FIXED) — Add these routes to your existing main.py
 
-Fetches macro data for the /macro/* endpoints:
-  /macro/metrics — yields, DXY, VIX, HY OAS, + NEW: Nasdaq-100, VXN, S&P 500, Brent Crude with SMAs
-  /macro/history — SQLite snapshots for historical view
-
-Data sources:
-  - yFinance: ^TNX, ^FVX, ^IRX, DX-Y.NYB, ^VIX, ^IXIC, ^VXN, ^GSPC, BZ=F
-  - FRED API: ICE BofA HY OAS (BAMLH0A0HYM2)
+Includes automatic schema migration to add new equity/commodity columns.
 
 Setup:
   1. Get a free FRED API key at https://fred.stlouisfed.org/docs/api/api_key.html
   2. Add to backend .env:  FRED_API_KEY=your_key_here
   3. Paste this block into main.py (after existing imports)
   4. Run: uvicorn main:app --reload --port 8000
-
-SQLite storage:
-  macro_history.db is created automatically in DATA_DIR
 """
 
 import os, time, sqlite3, requests
@@ -40,10 +31,10 @@ YF_TICKERS = {
     "yield_10y": "^TNX",
     "dxy":       "DX-Y.NYB",
     "vix":       "^VIX",
-    "nasdaq100": "^IXIC",    # NEW: Nasdaq-100 Composite
-    "vxn":       "^VXN",     # NEW: Nasdaq Volatility Index
-    "sp500":     "^GSPC",    # NEW: S&P 500
-    "brent":     "BZ=F",     # NEW: Brent Crude Oil futures
+    "nasdaq100": "^IXIC",
+    "vxn":       "^VXN",
+    "sp500":     "^GSPC",
+    "brent":     "BZ=F",
 }
 
 # FRED series
@@ -51,9 +42,42 @@ FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
 
 # ── SQLite helpers ───────────────────────────────────────────────────────────
 
+def _ensure_schema_upgraded():
+    """Upgrade schema if needed. Creates new columns if they don't exist."""
+    conn = sqlite3.connect(MACRO_DB_PATH)
+    cursor = conn.cursor()
+    
+    # Check if the new columns exist
+    cursor.execute("PRAGMA table_info(macro_snapshots)")
+    columns = {row[1] for row in cursor.fetchall()}
+    
+    # List of new columns we need
+    new_columns = [
+        "nasdaq100", "nasdaq100_sma20", "nasdaq100_sma50", "nasdaq100_sma200",
+        "vxn", "sp500", "sp500_sma20", "sp500_sma50", "sp500_sma200",
+        "brent", "brent_sma20", "brent_sma50", "brent_sma200"
+    ]
+    
+    # Add missing columns
+    for col in new_columns:
+        if col not in columns:
+            try:
+                cursor.execute(f"ALTER TABLE macro_snapshots ADD COLUMN {col} REAL")
+                print(f"Added column: {col}")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    print(f"Error adding column {col}: {e}")
+    
+    conn.commit()
+    conn.close()
+
+
 def _macro_db():
+    """Get or create macro_snapshots table with full schema."""
     os.makedirs(DATA_DIR, exist_ok=True)
     conn = sqlite3.connect(MACRO_DB_PATH)
+    
+    # Create table if it doesn't exist
     conn.execute("""
         CREATE TABLE IF NOT EXISTS macro_snapshots (
             date        TEXT PRIMARY KEY,
@@ -82,6 +106,10 @@ def _macro_db():
         )
     """)
     conn.commit()
+    
+    # Ensure schema is up to date (in case table exists with old schema)
+    _ensure_schema_upgraded()
+    
     return conn
 
 
@@ -89,64 +117,78 @@ def _store_macro_snapshot(snap: dict):
     """Upsert today's macro snapshot into SQLite."""
     conn = _macro_db()
     today = date.today().isoformat()
-    conn.execute("""
-        INSERT INTO macro_snapshots
-            (date, yield_1y, yield_2y, yield_3y, yield_5y, yield_10y,
-             dxy, vix, hy_oas, nasdaq100, nasdaq100_sma20, nasdaq100_sma50, nasdaq100_sma200,
-             vxn, sp500, sp500_sma20, sp500_sma50, sp500_sma200,
-             brent, brent_sma20, brent_sma50, brent_sma200, stored_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(date) DO UPDATE SET
-            yield_1y=excluded.yield_1y, yield_2y=excluded.yield_2y,
-            yield_3y=excluded.yield_3y, yield_5y=excluded.yield_5y,
-            yield_10y=excluded.yield_10y, dxy=excluded.dxy,
-            vix=excluded.vix, hy_oas=excluded.hy_oas,
-            nasdaq100=excluded.nasdaq100, nasdaq100_sma20=excluded.nasdaq100_sma20,
-            nasdaq100_sma50=excluded.nasdaq100_sma50, nasdaq100_sma200=excluded.nasdaq100_sma200,
-            vxn=excluded.vxn, sp500=excluded.sp500,
-            sp500_sma20=excluded.sp500_sma20, sp500_sma50=excluded.sp500_sma50,
-            sp500_sma200=excluded.sp500_sma200, brent=excluded.brent,
-            brent_sma20=excluded.brent_sma20, brent_sma50=excluded.brent_sma50,
-            brent_sma200=excluded.brent_sma200, stored_at=excluded.stored_at
-    """, (
-        today,
-        snap.get("yield_1y"), snap.get("yield_2y"),
-        snap.get("yield_3y"), snap.get("yield_5y"), snap.get("yield_10y"),
-        snap.get("dxy"), snap.get("vix"), snap.get("hy_oas"),
-        snap.get("nasdaq100"), snap.get("nasdaq100_sma20"), snap.get("nasdaq100_sma50"), snap.get("nasdaq100_sma200"),
-        snap.get("vxn"), snap.get("sp500"), snap.get("sp500_sma20"), snap.get("sp500_sma50"), snap.get("sp500_sma200"),
-        snap.get("brent"), snap.get("brent_sma20"), snap.get("brent_sma50"), snap.get("brent_sma200"),
-        datetime.utcnow().isoformat()
-    ))
-    conn.commit()
-    conn.close()
+    
+    try:
+        conn.execute("""
+            INSERT INTO macro_snapshots
+                (date, yield_1y, yield_2y, yield_3y, yield_5y, yield_10y,
+                 dxy, vix, hy_oas, nasdaq100, nasdaq100_sma20, nasdaq100_sma50, nasdaq100_sma200,
+                 vxn, sp500, sp500_sma20, sp500_sma50, sp500_sma200,
+                 brent, brent_sma20, brent_sma50, brent_sma200, stored_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(date) DO UPDATE SET
+                yield_1y=excluded.yield_1y, yield_2y=excluded.yield_2y,
+                yield_3y=excluded.yield_3y, yield_5y=excluded.yield_5y,
+                yield_10y=excluded.yield_10y, dxy=excluded.dxy,
+                vix=excluded.vix, hy_oas=excluded.hy_oas,
+                nasdaq100=excluded.nasdaq100, nasdaq100_sma20=excluded.nasdaq100_sma20,
+                nasdaq100_sma50=excluded.nasdaq100_sma50, nasdaq100_sma200=excluded.nasdaq100_sma200,
+                vxn=excluded.vxn, sp500=excluded.sp500,
+                sp500_sma20=excluded.sp500_sma20, sp500_sma50=excluded.sp500_sma50,
+                sp500_sma200=excluded.sp500_sma200, brent=excluded.brent,
+                brent_sma20=excluded.brent_sma20, brent_sma50=excluded.brent_sma50,
+                brent_sma200=excluded.brent_sma200, stored_at=excluded.stored_at
+        """, (
+            today,
+            snap.get("yield_1y"), snap.get("yield_2y"),
+            snap.get("yield_3y"), snap.get("yield_5y"), snap.get("yield_10y"),
+            snap.get("dxy"), snap.get("vix"), snap.get("hy_oas"),
+            snap.get("nasdaq100"), snap.get("nasdaq100_sma20"), snap.get("nasdaq100_sma50"), snap.get("nasdaq100_sma200"),
+            snap.get("vxn"), snap.get("sp500"), snap.get("sp500_sma20"), snap.get("sp500_sma50"), snap.get("sp500_sma200"),
+            snap.get("brent"), snap.get("brent_sma20"), snap.get("brent_sma50"), snap.get("brent_sma200"),
+            datetime.utcnow().isoformat()
+        ))
+        conn.commit()
+    except Exception as e:
+        print(f"Error storing macro snapshot: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 def _fetch_macro_history_rows(n_days: int = 95) -> list[dict]:
+    """Safely fetch history, returning only columns that exist."""
     conn = _macro_db()
-    rows = conn.execute("""
-        SELECT date, yield_1y, yield_2y, yield_3y, yield_5y, yield_10y,
-               dxy, vix, hy_oas, nasdaq100, nasdaq100_sma20, nasdaq100_sma50, nasdaq100_sma200,
-               vxn, sp500, sp500_sma20, sp500_sma50, sp500_sma200,
-               brent, brent_sma20, brent_sma50, brent_sma200
-        FROM macro_snapshots
-        ORDER BY date DESC
-        LIMIT ?
-    """, (n_days,)).fetchall()
-    conn.close()
-    cols = ["date","yield_1y","yield_2y","yield_3y","yield_5y","yield_10y",
-            "dxy","vix","hy_oas","nasdaq100","nasdaq100_sma20","nasdaq100_sma50","nasdaq100_sma200",
-            "vxn","sp500","sp500_sma20","sp500_sma50","sp500_sma200",
-            "brent","brent_sma20","brent_sma50","brent_sma200"]
-    return [dict(zip(cols, r)) for r in rows]
+    
+    try:
+        # Get available columns from table
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(macro_snapshots)")
+        available_cols = {row[1] for row in cursor.fetchall()}
+        
+        # Build SELECT with only available columns
+        base_cols = ["date", "yield_1y", "yield_2y", "yield_3y", "yield_5y", "yield_10y", "dxy", "vix", "hy_oas"]
+        new_cols = ["nasdaq100", "nasdaq100_sma20", "nasdaq100_sma50", "nasdaq100_sma200",
+                    "vxn", "sp500", "sp500_sma20", "sp500_sma50", "sp500_sma200",
+                    "brent", "brent_sma20", "brent_sma50", "brent_sma200"]
+        
+        select_cols = base_cols + [c for c in new_cols if c in available_cols]
+        select_clause = ", ".join(select_cols)
+        
+        query = f"SELECT {select_clause} FROM macro_snapshots ORDER BY date DESC LIMIT ?"
+        rows = conn.execute(query, (n_days,)).fetchall()
+        
+        return [dict(zip(select_cols, r)) for r in rows]
+    except Exception as e:
+        print(f"Error fetching macro history: {e}")
+        return []
+    finally:
+        conn.close()
 
 # ── Data fetchers ────────────────────────────────────────────────────────────
 
 def _fetch_yfinance_bulk(n_days: int = 200) -> dict:
-    """
-    Download n_days of daily data for all tickers.
-    Returns {ticker_key: pd.DataFrame with Close column}.
-    """
+    """Download n_days of daily data for all tickers."""
     tickers = list(YF_TICKERS.values())
     period = f"{n_days}d"
     try:
@@ -158,7 +200,7 @@ def _fetch_yfinance_bulk(n_days: int = 200) -> dict:
             if ticker in close.columns:
                 result[key] = close[ticker].dropna()
             else:
-                # Single ticker case — close is a Series, not a DataFrame
+                # Single ticker case
                 if len(YF_TICKERS) == 1:
                     result[key] = close.dropna()
                 else:
@@ -340,10 +382,7 @@ def _fmt_hy_oas(fred_data: dict) -> dict:
 
 
 def _fmt_equity_sma_card(ticker_name: str, series) -> dict:
-    """
-    Format equity/commodity card with 20/50/200 SMAs.
-    Returns: {current, sma20, sma50, sma200, pct_from_20, pct_from_50, pct_from_200, percentile}
-    """
+    """Format equity/commodity card with 20/50/200 SMAs."""
     if series is None or len(series) == 0:
         return {"current": None, "error": "No data"}
 
@@ -379,78 +418,6 @@ def _fmt_equity_sma_card(ticker_name: str, series) -> dict:
         "percentile": pctile,
         "alert": alert,
     }
-
-# ── Cache ────────────────────────────────────────────────────────────────────
-_macro_cache: dict = {"data": None, "ts": 0.0}
-MACRO_CACHE_TTL = 300  # 5 minutes
-
-
-def _build_macro_metrics() -> dict:
-    global _macro_cache
-    now = time.time()
-    if _macro_cache["data"] and (now - _macro_cache["ts"]) < MACRO_CACHE_TTL:
-        return _macro_cache["data"]
-
-    yf_data  = _fetch_yfinance_bulk(n_days=200)
-    fred_data = _fetch_fred_hy_oas(n_days=200)
-
-    yields = {
-        "1y":  _fmt_yield_card("yield_1y",  yf_data.get("yield_1y"),  "1Y"),
-        "2y":  _fmt_yield_card("yield_2y",  yf_data.get("yield_2y"),  "2Y"),
-        "3y":  _fmt_yield_card("yield_3y",  yf_data.get("yield_3y"),  "3Y"),
-        "5y":  _fmt_yield_card("yield_5y",  yf_data.get("yield_5y"),  "5Y"),
-        "10y": _fmt_yield_card("yield_10y", yf_data.get("yield_10y"), "10Y"),
-    }
-
-    y2_val  = yields["2y"].get("current")
-    y10_val = yields["10y"].get("current")
-
-    result = {
-        "updated_at": datetime.utcnow().isoformat() + "Z",
-        "yields": yields,
-        "curve": {
-            "spread_2y10y_bp": round((y10_val - y2_val) * 100) if (y2_val and y10_val) else None,
-            "label": _spread_label(y2_val, y10_val),
-        },
-        "dxy":    _fmt_dxy(yf_data.get("dxy")),
-        "vix":    _fmt_vix(yf_data.get("vix")),
-        "hy_oas": _fmt_hy_oas(fred_data),
-        # NEW: Equity & commodity cards with SMAs
-        "nasdaq100": _fmt_equity_sma_card("Nasdaq-100", yf_data.get("nasdaq100")),
-        "vxn":       _fmt_vix_derivative(yf_data.get("vxn")),
-        "sp500":     _fmt_equity_sma_card("S&P 500", yf_data.get("sp500")),
-        "brent":     _fmt_equity_sma_card("Brent Crude", yf_data.get("brent")),
-    }
-
-    # Persist snapshot
-    snap = {
-        "yield_1y":  yields["1y"].get("current"),
-        "yield_2y":  yields["2y"].get("current"),
-        "yield_3y":  yields["3y"].get("current"),
-        "yield_5y":  yields["5y"].get("current"),
-        "yield_10y": yields["10y"].get("current"),
-        "dxy":       result["dxy"].get("current"),
-        "vix":       result["vix"].get("current"),
-        "hy_oas":    result["hy_oas"].get("current"),
-        "nasdaq100": result["nasdaq100"].get("current"),
-        "nasdaq100_sma20": result["nasdaq100"].get("sma20"),
-        "nasdaq100_sma50": result["nasdaq100"].get("sma50"),
-        "nasdaq100_sma200": result["nasdaq100"].get("sma200"),
-        "vxn":       result["vxn"].get("current"),
-        "sp500":     result["sp500"].get("current"),
-        "sp500_sma20": result["sp500"].get("sma20"),
-        "sp500_sma50": result["sp500"].get("sma50"),
-        "sp500_sma200": result["sp500"].get("sma200"),
-        "brent":     result["brent"].get("current"),
-        "brent_sma20": result["brent"].get("sma20"),
-        "brent_sma50": result["brent"].get("sma50"),
-        "brent_sma200": result["brent"].get("sma200"),
-    }
-    _store_macro_snapshot(snap)
-
-    _macro_cache["data"] = result
-    _macro_cache["ts"]   = now
-    return result
 
 
 def _fmt_vix_derivative(series) -> dict:
@@ -489,6 +456,77 @@ def _spread_label(y2, y10) -> str:
     if spread_bp < 100: return f"Normal steepening ({spread_bp:+d}bp)"
     return f"Steep ({spread_bp:+d}bp)"
 
+# ── Cache ────────────────────────────────────────────────────────────────────
+_macro_cache: dict = {"data": None, "ts": 0.0}
+MACRO_CACHE_TTL = 300  # 5 minutes
+
+
+def _build_macro_metrics() -> dict:
+    global _macro_cache
+    now = time.time()
+    if _macro_cache["data"] and (now - _macro_cache["ts"]) < MACRO_CACHE_TTL:
+        return _macro_cache["data"]
+
+    yf_data  = _fetch_yfinance_bulk(n_days=200)
+    fred_data = _fetch_fred_hy_oas(n_days=200)
+
+    yields = {
+        "1y":  _fmt_yield_card("yield_1y",  yf_data.get("yield_1y"),  "1Y"),
+        "2y":  _fmt_yield_card("yield_2y",  yf_data.get("yield_2y"),  "2Y"),
+        "3y":  _fmt_yield_card("yield_3y",  yf_data.get("yield_3y"),  "3Y"),
+        "5y":  _fmt_yield_card("yield_5y",  yf_data.get("yield_5y"),  "5Y"),
+        "10y": _fmt_yield_card("yield_10y", yf_data.get("yield_10y"), "10Y"),
+    }
+
+    y2_val  = yields["2y"].get("current")
+    y10_val = yields["10y"].get("current")
+
+    result = {
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "yields": yields,
+        "curve": {
+            "spread_2y10y_bp": round((y10_val - y2_val) * 100) if (y2_val and y10_val) else None,
+            "label": _spread_label(y2_val, y10_val),
+        },
+        "dxy":    _fmt_dxy(yf_data.get("dxy")),
+        "vix":    _fmt_vix(yf_data.get("vix")),
+        "hy_oas": _fmt_hy_oas(fred_data),
+        "nasdaq100": _fmt_equity_sma_card("Nasdaq-100", yf_data.get("nasdaq100")),
+        "vxn":       _fmt_vix_derivative(yf_data.get("vxn")),
+        "sp500":     _fmt_equity_sma_card("S&P 500", yf_data.get("sp500")),
+        "brent":     _fmt_equity_sma_card("Brent Crude", yf_data.get("brent")),
+    }
+
+    # Persist snapshot
+    snap = {
+        "yield_1y":  yields["1y"].get("current"),
+        "yield_2y":  yields["2y"].get("current"),
+        "yield_3y":  yields["3y"].get("current"),
+        "yield_5y":  yields["5y"].get("current"),
+        "yield_10y": yields["10y"].get("current"),
+        "dxy":       result["dxy"].get("current"),
+        "vix":       result["vix"].get("current"),
+        "hy_oas":    result["hy_oas"].get("current"),
+        "nasdaq100": result["nasdaq100"].get("current"),
+        "nasdaq100_sma20": result["nasdaq100"].get("sma20"),
+        "nasdaq100_sma50": result["nasdaq100"].get("sma50"),
+        "nasdaq100_sma200": result["nasdaq100"].get("sma200"),
+        "vxn":       result["vxn"].get("current"),
+        "sp500":     result["sp500"].get("current"),
+        "sp500_sma20": result["sp500"].get("sma20"),
+        "sp500_sma50": result["sp500"].get("sma50"),
+        "sp500_sma200": result["sp500"].get("sma200"),
+        "brent":     result["brent"].get("current"),
+        "brent_sma20": result["brent"].get("sma20"),
+        "brent_sma50": result["brent"].get("sma50"),
+        "brent_sma200": result["brent"].get("sma200"),
+    }
+    _store_macro_snapshot(snap)
+
+    _macro_cache["data"] = result
+    _macro_cache["ts"]   = now
+    return result
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @macro_router.get("/metrics")
@@ -496,8 +534,7 @@ def get_macro_metrics():
     """
     Returns: {
       updated_at, yields, curve, dxy, vix, hy_oas,
-      nasdaq100 {current, sma20/50/200, pct_from_sma*}, 
-      vxn, sp500, brent
+      nasdaq100, vxn, sp500, brent (all with SMA data)
     }
     """
     return _build_macro_metrics()
