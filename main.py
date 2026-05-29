@@ -911,32 +911,31 @@ def _history_to_metric(metric: str, history: dict) -> dict:
 
 def _build_metrics(cg: dict) -> dict:
     """Fetch and format all metrics. Used by /metrics, /summary, /causal."""
-   # netflow_raw           = fetch_exchange_netflow()
-   netflow_history  = _latest_from_history("exchange_netflow")
+    # netflow_raw  = fetch_exchange_netflow()   # commented out — 401
+    # realized_raw = fetch_realized_cap(...)    # commented out — 401
+    netflow_history  = _latest_from_history("exchange_netflow")
     realized_history = _latest_from_history("realized_cap")
-    cme_raw               = fetch_cme_basis().get("cme_basis")
-   # realized_raw          = fetch_realized_cap(chart=cg["chart"])
-    funding_raw           = fetch_funding(markets=cg["derivatives"])
-    oi_raw                = fetch_open_interest(markets=cg["derivatives"])
-    etf_raw               = fetch_etf_flow()
-    lth_raw               = fetch_lth_supply()
+    cme_raw          = fetch_cme_basis().get("cme_basis")
+    funding_raw      = fetch_funding(markets=cg["derivatives"])
+    oi_raw           = fetch_open_interest(markets=cg["derivatives"])
+    etf_raw          = fetch_etf_flow()
+    lth_raw          = fetch_lth_supply()
     price_raw, volume_raw = fetch_price_and_volume(
         chart=cg["chart"], ohlcv=cg["ohlcv"])
     stablecoin_raw = fetch_stablecoin_supply().get("stablecoin_supply")
-    dominance_raw = fetch_btc_dominance().get("btc_dominance")
-
+    dominance_raw  = fetch_btc_dominance().get("btc_dominance")
     return {
-        "etf_flow":         format_etf_flow(**get(etf_raw,      "etf_flow")),
-        "funding":          format_funding(**get(funding_raw,    "funding")),
-        "open_interest":    format_open_interest(**get(oi_raw,   "open_interest")),
-        "exchange_netflow": _history_to_metric("exchange_netflow", netflow_history) if netflow_history else format_exchange_netflow(**get(None, "exchange_netflow")),
-        "volume":           format_volume(**get(volume_raw,      "volume")),
-        "price_move":       format_price_move(**get(price_raw,   "price_move")),
-        "realized_cap":     _history_to_metric("realized_cap", realized_history)   if realized_history else format_realized_cap(**get(None, "realized_cap")),
-        "lth_supply":       format_lth_supply(**get(lth_raw,    "lth_supply")),
-        "cme_basis":        format_cme_basis(**get(cme_raw,     "cme_basis")),
+        "etf_flow":          format_etf_flow(**get(etf_raw, "etf_flow")),
+        "funding":           format_funding(**get(funding_raw, "funding")),
+        "open_interest":     format_open_interest(**get(oi_raw, "open_interest")),
+        "exchange_netflow":  _history_to_metric("exchange_netflow", netflow_history) if netflow_history else format_exchange_netflow(**get(None, "exchange_netflow")),
+        "volume":            format_volume(**get(volume_raw, "volume")),
+        "price_move":        format_price_move(**get(price_raw, "price_move")),
+        "realized_cap":      _history_to_metric("realized_cap", realized_history) if realized_history else format_realized_cap(**get(None, "realized_cap")),
+        "lth_supply":        format_lth_supply(**get(lth_raw, "lth_supply")),
+        "cme_basis":         format_cme_basis(**get(cme_raw, "cme_basis")),
         "stablecoin_supply": format_stablecoin_supply(**get(stablecoin_raw, "stablecoin_supply")),
-        "btc_dominance": format_btc_dominance(**get(dominance_raw, "btc_dominance")),
+        "btc_dominance":     format_btc_dominance(**get(dominance_raw, "btc_dominance")),
     }
 def _build_metrics_cached(cg: dict) -> dict:
     now = time.time()
