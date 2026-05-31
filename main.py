@@ -418,32 +418,66 @@ def format_stablecoin_supply(usdt: float, usdc: float, **kwargs) -> dict:
         usdt_7d_str = "—"
         usdc_7d_str = "—"
 
-    # Alert thresholds (based on 7d % change)
-    if d7_pct > 10:
-        alert       = "Rapid liquidity expansion — strong capital staging"
-        alert_level = "extreme"
-        pattern     = f"7d +{d7_pct:.1f}% — aggressive stablecoin minting, capital entering crypto"
-    elif d7_pct > 5:
-        alert       = "Liquidity expanding — capital staging into crypto"
+   # ── Alert logic ───────────────────────────────────────────────────────────
+    # Uses both 7d momentum AND 30d context to avoid false signals from
+    # week-over-week recoveries inside a flat/contracting monthly trend.
+
+    vs30_pct = (vs30_delta / avg_30) * 100 if avg_30 else 0
+
+    # Classify 30d trend: expanding, flat, or contracting
+    if vs30_pct > 3:
+        trend_30d = "expanding"
+    elif vs30_pct < -3:
+        trend_30d = "contracting"
+    else:
+        trend_30d = "flat"
+
+    # Alert requires BOTH 7d momentum AND 30d trend to agree before
+    # labelling expansion/contraction as confirmed.
+    if d7_pct > 5 and trend_30d == "expanding":
+        alert       = "Liquidity expanding — capital staging"
         alert_level = "notable"
-        pattern     = f"7d +{d7_pct:.1f}% — above-normal stablecoin growth, bullish liquidity backdrop"
-    elif d7_pct < -10:
-        alert       = "Rapid liquidity contraction — capital exiting or deploying"
-        alert_level = "extreme"
-        pattern     = f"7d {d7_pct:.1f}% — large stablecoin burn, capital rotating out or into BTC"
-    elif d7_pct < -5:
+        pattern     = f"7d {d7_pct:+.1f}% · vs 30d avg {vs30_pct:+.1f}% — confirmed expansion, bullish liquidity backdrop"
+
+    elif d7_pct > 5 and trend_30d == "flat":
+        alert       = "Week-over-week recovery — 30d trend flat"
+        alert_level = "none"
+        pattern     = f"7d {d7_pct:+.1f}% but vs 30d avg {vs30_pct:+.1f}% — likely rebound from intra-month dip, not new expansion"
+
+    elif d7_pct > 5 and trend_30d == "contracting":
+        alert       = "Short-term bounce inside monthly contraction"
+        alert_level = "none"
+        pattern     = f"7d {d7_pct:+.1f}% but vs 30d avg {vs30_pct:+.1f}% — recovery within downtrend, treat with caution"
+
+    elif d7_pct < -5 and trend_30d == "contracting":
         alert       = "Liquidity contracting — deployment or outflow signal"
         alert_level = "notable"
-        pattern     = f"7d {d7_pct:.1f}% — stablecoin supply shrinking, watch for direction"
+        pattern     = f"7d {d7_pct:+.1f}% · vs 30d avg {vs30_pct:+.1f}% — confirmed contraction; capital rotating out or exiting crypto"
+
+    elif d7_pct < -5 and trend_30d in ("flat", "expanding"):
+        alert       = "Weekly dip inside stable supply"
+        alert_level = "none"
+        pattern     = f"7d {d7_pct:+.1f}% but vs 30d avg {vs30_pct:+.1f}% — short-term dip, broader trend still stable"
+
     elif pctl >= 90:
         alert       = "Supply at 90d high — peak dry powder"
         alert_level = "notable"
-        pattern     = "Maximum liquidity available — historically precedes deployment into risk assets"
+        pattern     = f"90th percentile · vs 30d avg {vs30_pct:+.1f}% — maximum liquidity available, watch for deployment"
+
+    elif pctl <= 10:
+        alert       = "Supply at 90d low — dry powder depleted"
+        alert_level = "notable"
+        pattern     = f"10th percentile · vs 30d avg {vs30_pct:+.1f}% — minimum liquidity, capital may have exited or deployed"
+
+    elif trend_30d == "contracting" and abs(d7_pct) < 5:
+        alert       = "Gradual contraction"
+        alert_level = "none"
+        pattern     = f"vs 30d avg {vs30_pct:+.1f}% — slow bleed in stablecoin supply, no sharp catalyst"
+
     else:
         alert       = "—"
         alert_level = "none"
-        pattern     = "Stable supply — neutral liquidity backdrop"
-
+        pattern     = f"Supply stable · vs 30d avg {vs30_pct:+.1f}% · neutral liquidity backdrop"
     usdt_share = round(usdt / total * 100, 1) if total else 0
     usdc_share = round(usdc / total * 100, 1) if total else 0
 
