@@ -18,6 +18,7 @@ from sector_flows_routes import sector_flows_router
 from contextlib import asynccontextmanager
 from liquidity_routes import liquidity_router
 from forex_routes import forex_router
+from growth_inflation_routes import growth_router
 
 
 from formatters import (
@@ -86,6 +87,7 @@ app.include_router(macro_router)
 app.include_router(sector_flows_router)
 app.include_router(liquidity_router)
 app.include_router(forex_router)
+app.include_router(growth_router)
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
 
 DB_PATH = DATA_DIR / "basis_history.db"
