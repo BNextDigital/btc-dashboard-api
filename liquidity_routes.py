@@ -675,6 +675,268 @@ def flush_liquidity_cache():
     _cache = {"data": None, "ts": 0.0}
     return {"flushed": True}
 
+# ── Yield Curve ───────────────────────────────────────────────────────────────
+#
+# Primary:  US Treasury XML feed (no key, same-day data after ~5:30pm ET)
+# Fallback: FRED DGS* series (1-day lag, requires FRED_API_KEY)
+#
+# Tenors returned: 1M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 20Y, 30Y
+
+TREASURY_XML_URL = (
+    "https://home.treasury.gov/resource-center/data-chart-center/"
+    "interest-rates/pages/xml?data=daily_treasury_yield_curve&field_tdr_date_value={ym}"
+)
+
+# FRED series for each tenor (fallback)
+YIELD_FRED_SERIES = {
+    "1M":  "DGS1MO",
+    "3M":  "DGS3MO",
+    "6M":  "DGS6MO",
+    "1Y":  "DGS1",
+    "2Y":  "DGS2",
+    "3Y":  "DGS3",
+    "5Y":  "DGS5",
+    "7Y":  "DGS7",
+    "10Y": "DGS10",
+    "20Y": "DGS20",
+    "30Y": "DGS30",
+}
+
+# XML field names in the Treasury feed → our tenor labels
+TREASURY_XML_FIELDS = {
+    "BC_1MONTH":  "1M",
+    "BC_3MONTH":  "3M",
+    "BC_6MONTH":  "6M",
+    "BC_1YEAR":   "1Y",
+    "BC_2YEAR":   "2Y",
+    "BC_3YEAR":   "3Y",
+    "BC_5YEAR":   "5Y",
+    "BC_7YEAR":   "7Y",
+    "BC_10YEAR":  "10Y",
+    "BC_20YEAR":  "20Y",
+    "BC_30YEAR":  "30Y",
+}
+
+# Duration in years for each tenor (for slope calculations)
+TENOR_YEARS = {
+    "1M": 1/12, "3M": 0.25, "6M": 0.5, "1Y": 1,
+    "2Y": 2, "3Y": 3, "5Y": 5, "7Y": 7,
+    "10Y": 10, "20Y": 20, "30Y": 30,
+}
+
+_yield_cache: dict = {"data": None, "ts": 0.0}
+YIELD_CACHE_TTL = 3600  # 1 hour — Treasury updates once daily
+
+
+def _fetch_treasury_xml() -> dict[str, float] | None:
+    """
+    Fetch today's (or most recent) CMT rates from the US Treasury XML feed.
+    Returns {tenor_label: rate_pct} or None on failure.
+    Tries current month first, falls back to prior month if today's data isn't
+    published yet (before ~5:30pm ET).
+    """
+    import xml.etree.ElementTree as ET
+
+    for month_offset in (0, 1):
+        try:
+            target = date.today().replace(day=1)
+            if month_offset:
+                # go back one month
+                target = (target - timedelta(days=1)).replace(day=1)
+            ym = target.strftime("%Y%m")
+            url = TREASURY_XML_URL.format(ym=ym)
+            r = requests.get(url, timeout=12, headers={"User-Agent": "btc-dashboard/1.0"})
+            r.raise_for_status()
+
+            # Parse Atom/XML — entries are in reverse chronological order
+            ns = {
+                "atom": "http://www.w3.org/2005/Atom",
+                "d":    "http://schemas.microsoft.com/ado/2007/08/dataservices",
+                "m":    "http://schemas.microsoft.com/ado/2007/08/dataservices/metadata",
+            }
+            root = ET.fromstring(r.content)
+            entries = root.findall("atom:entry", ns)
+            if not entries:
+                continue
+
+            # First entry = most recent trading day
+            content = entries[0].find(".//m:properties", ns)
+            if content is None:
+                continue
+
+            result: dict[str, float] = {}
+            for xml_field, tenor in TREASURY_XML_FIELDS.items():
+                el = content.find(f"d:{xml_field}", ns)
+                if el is not None and el.text:
+                    try:
+                        result[tenor] = float(el.text)
+                    except ValueError:
+                        pass
+
+            if result:
+                print(f"[yield_curve] Treasury XML: {len(result)} tenors from {ym}")
+                return result
+
+        except Exception as e:
+            print(f"[yield_curve] Treasury XML error (offset={month_offset}): {e}")
+
+    return None
+
+
+def _fetch_yields_from_fred() -> dict[str, float]:
+    """
+    Fallback: fetch latest yield for each tenor from FRED DGS* series.
+    Returns {tenor_label: rate_pct} — only includes tenors with data.
+    """
+    result: dict[str, float] = {}
+    for tenor, series_id in YIELD_FRED_SERIES.items():
+        obs = _fred_series(series_id, n_obs=5)  # only need the latest few
+        if obs:
+            result[tenor] = obs[-1][1]
+    print(f"[yield_curve] FRED fallback: {len(result)} tenors")
+    return result
+
+
+def _curve_shape_label(rates: dict[str, float]) -> tuple[str, str]:
+    """
+    Classify the curve shape and return (label, description).
+    Uses 2Y-10Y spread as primary signal, with short-end context.
+    """
+    y2  = rates.get("2Y")
+    y10 = rates.get("10Y")
+    y3m = rates.get("3M")
+    y30 = rates.get("30Y")
+
+    if y2 is None or y10 is None:
+        return "Unknown", "Insufficient data"
+
+    spread_2y10y = y10 - y2  # basis points conceptually, in pct
+    spread_bp    = round(spread_2y10y * 100)
+
+    # Shape classification
+    if spread_bp <= -50:
+        shape = "Deeply Inverted"
+        desc  = f"2Y–10Y inverted {spread_bp:+d}bp — historically precedes recession by 12–18m"
+        level = "extreme"
+    elif spread_bp < 0:
+        shape = "Inverted"
+        desc  = f"2Y–10Y inverted {spread_bp:+d}bp — Fed policy remains restrictive"
+        level = "notable"
+    elif spread_bp < 25:
+        shape = "Near Flat"
+        desc  = f"2Y–10Y spread only {spread_bp:+d}bp — curve struggling to normalize"
+        level = "notable"
+    elif spread_bp < 75:
+        shape = "Flattening"
+        desc  = f"2Y–10Y {spread_bp:+d}bp — mild steepening underway"
+        level = "none"
+    elif spread_bp < 150:
+        shape = "Normal"
+        desc  = f"2Y–10Y {spread_bp:+d}bp — healthy positive slope"
+        level = "none"
+    else:
+        shape = "Steep"
+        desc  = f"2Y–10Y {spread_bp:+d}bp — curve unusually steep, often early cycle"
+        level = "none"
+
+    # Override: 3M-10Y is the Fed's preferred recession signal
+    if y3m is not None:
+        spread_3m10y_bp = round((y10 - y3m) * 100)
+        if spread_3m10y_bp < -100:
+            desc += f" | 3M–10Y deeply inverted {spread_3m10y_bp:+d}bp (Fed signal)"
+            level = "extreme"
+
+    return shape, desc, level, spread_bp
+
+
+def _build_yield_curve() -> dict:
+    """
+    Fetch CMT rates, compute spreads and shape, return structured response.
+    """
+    global _yield_cache
+    now = time.time()
+    if _yield_cache["data"] and (now - _yield_cache["ts"]) < YIELD_CACHE_TTL:
+        return _yield_cache["data"]
+
+    # Try Treasury direct first, fall back to FRED
+    rates = _fetch_treasury_xml()
+    source = "US Treasury (CMT)"
+    if not rates:
+        rates = _fetch_yields_from_fred()
+        source = "FRED (DGS series)"
+
+    if not rates:
+        return {
+            "error": "Both Treasury XML and FRED fallback unavailable",
+            "tenors": {},
+            "spreads": {},
+        }
+
+    # Key spreads
+    def spread_bp(short_tenor: str, long_tenor: str) -> int | None:
+        s = rates.get(short_tenor)
+        l = rates.get(long_tenor)
+        if s is None or l is None:
+            return None
+        return round((l - s) * 100)
+
+    spreads = {
+        "2y10y":  spread_bp("2Y",  "10Y"),
+        "3m10y":  spread_bp("3M",  "10Y"),
+        "2y30y":  spread_bp("2Y",  "30Y"),
+        "5y30y":  spread_bp("5Y",  "30Y"),
+        "10y30y": spread_bp("10Y", "30Y"),
+    }
+
+    # Shape classification
+    shape_result = _curve_shape_label(rates)
+    shape_label, shape_desc, shape_level = shape_result[0], shape_result[1], shape_result[2]
+    spread_2y10y_bp = shape_result[3]
+
+    # Build tenor list in order (only include tenors with data)
+    tenor_order = ["1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"]
+    tenors_out = []
+    for t in tenor_order:
+        if t in rates:
+            tenors_out.append({
+                "label": t,
+                "rate":  round(rates[t], 3),
+                "years": TENOR_YEARS.get(t),
+            })
+
+    result = {
+        "updated_at":       datetime.utcnow().isoformat() + "Z",
+        "source":           source,
+        "tenors":           tenors_out,
+        "spreads":          spreads,
+        "shape":            shape_label,
+        "shape_description": shape_desc,
+        "shape_level":      shape_level,
+        "spread_2y10y_bp":  spread_2y10y_bp,
+    }
+
+    _yield_cache["data"] = result
+    _yield_cache["ts"]   = now
+    return result
+
+
+@liquidity_router.get("/yield-curve")
+def get_yield_curve():
+    """
+    Returns CMT yield curve snapshot with spreads and shape classification.
+    Source: US Treasury XML (primary, same-day) → FRED DGS series (fallback, 1d lag).
+    Cache: 1 hour.
+    """
+    return _build_yield_curve()
+
+
+@liquidity_router.get("/yield-curve/cache/flush")
+def flush_yield_cache():
+    global _yield_cache
+    _yield_cache = {"data": None, "ts": 0.0}
+    return {"flushed": True}
+
+
 # ── Registration (add to main.py) ─────────────────────────────────────────────
 #
 #   from liquidity_routes import liquidity_router
@@ -684,3 +946,5 @@ def flush_liquidity_cache():
 #   GET /liquidity/metrics
 #   GET /liquidity/history?days=90
 #   GET /liquidity/cache/flush
+#   GET /liquidity/yield-curve
+#   GET /liquidity/yield-curve/cache/flush
