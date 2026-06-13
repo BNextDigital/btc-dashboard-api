@@ -46,13 +46,17 @@ FRED_BASE       = "https://api.stlouisfed.org/fred/series/observations"
 
 # FRED series IDs
 SERIES = {
-    "reserves": "WRESBAL",     # Reserve Balances — weekly, billions USD
-    "tga":      "WTREGEN",     # Treasury General Account — weekly, billions USD
+    "reserves": "WRESBAL",     # Reserve Balances — weekly, MILLIONS USD
+    "tga":      "WTREGEN",     # Treasury General Account — weekly, MILLIONS USD
     "rrp":      "RRPONTSYD",   # Overnight RRP — daily, billions USD
     "sofr":     "SOFR",        # SOFR rate — daily, percent
     "effr":     "FEDFUNDS",    # Effective Fed Funds Rate — monthly, percent
     "m2":       "M2SL",        # M2 Money Supply — weekly, billions USD
 }
+
+# Unit scale factors — raw FRED values need conversion for display
+# WRESBAL and WTREGEN arrive in millions of USD; everything else in billions
+MILLIONS_SERIES = {"reserves", "tga"}   # divide by 1000 to get billions
 
 # City metaphor subtitles
 CITY_LABELS = {
@@ -174,12 +178,25 @@ def _pct_rank(series: list[float], current: float) -> int:
     return round(sum(1 for v in series if v < current) / len(series) * 100)
 
 
-def _fmt_trillions(v: float | None) -> str:
+def _fmt_billions(v: float | None) -> str:
+    """Format a value that is already in billions USD."""
     if v is None:
         return "—"
     if abs(v) >= 1000:
         return f"${v/1000:.2f}T"
-    return f"${v:.0f}B"
+    if abs(v) < 1:
+        return f"${v:.2f}B"
+    return f"${v:.1f}B"
+
+
+def _fmt_millions(v: float | None) -> str:
+    """Format a value that arrives in millions USD (WRESBAL, WTREGEN)."""
+    if v is None:
+        return "—"
+    b = v / 1000  # millions → billions
+    if abs(b) >= 1000:
+        return f"${b/1000:.2f}T"
+    return f"${b:.0f}B"
 
 
 def _fmt_rate(v: float | None, suffix: str = "%") -> str:
@@ -193,16 +210,24 @@ def _spark(series: list[float], n: int = 12) -> list[float]:
     return series[-n:] if len(series) >= n else series
 
 
-def _delta_str(current: float, prev: float, is_rate: bool = False) -> str:
+def _delta_str_millions(current: float, prev: float) -> str:
+    """Delta string for WRESBAL/WTREGEN — raw values in millions, display in billions."""
+    delta_b = (current - prev) / 1000  # millions → billions
+    sign = "+" if delta_b >= 0 else ""
+    if abs(delta_b) >= 1000:
+        return f"{sign}${delta_b/1000:.2f}T"
+    return f"{sign}${delta_b:.0f}B"
+
+
+def _delta_str_billions(current: float, prev: float) -> str:
+    """Delta string for series already in billions (RRP, M2)."""
     delta = current - prev
-    if is_rate:
-        sign = "+" if delta >= 0 else ""
-        return f"{sign}{delta:.2f}bp" if abs(delta) < 1 else f"{sign}{delta:.2f}%"
-    # balance sheet — format in billions
     sign = "+" if delta >= 0 else ""
     if abs(delta) >= 1000:
         return f"{sign}${delta/1000:.2f}T"
-    return f"{sign}${delta:.0f}B"
+    if abs(delta) < 1:
+        return f"{sign}${delta:.2f}B"
+    return f"{sign}${delta:.1f}B"
 
 
 def _build_reserves_card(obs: list[tuple[str, float]]) -> dict:
@@ -210,41 +235,44 @@ def _build_reserves_card(obs: list[tuple[str, float]]) -> dict:
     if not vals:
         return {"error": "FRED unavailable", "city_label": CITY_LABELS["reserves"]}
     current = vals[-1]
-    d4w = vals[-5] if len(vals) >= 5 else vals[0]      # ~4 weeks
+    d4w  = vals[-5]  if len(vals) >= 5  else vals[0]   # ~4 weeks
     d13w = vals[-14] if len(vals) >= 14 else vals[0]   # ~13 weeks
 
     pctile = _pct_rank(vals, current)
 
-    if current >= 3500:
+    # Raw values in MILLIONS — thresholds scaled accordingly
+    # $3.5T = 3,500,000M  |  $3.0T = 3,000,000M  |  $2.5T = 2,500,000M
+    if current >= 3_500_000:
         alert_level, alert = "none", "Ample — reservoir well stocked"
-    elif current >= 3000:
+    elif current >= 3_000_000:
         alert_level, alert = "none", "Adequate — above critical floor"
-    elif current >= 2500:
+    elif current >= 2_500_000:
         alert_level, alert = "notable", "Tightening — approaching stress zone"
     else:
         alert_level, alert = "extreme", "Scarce — below $2.5T stress threshold"
 
-    trend_4w = current - d4w
-    if trend_4w > 100:
-        pattern = f"Rising +${trend_4w:.0f}B (4w) — reservoir refilling"
-    elif trend_4w < -100:
-        pattern = f"Draining −${abs(trend_4w):.0f}B (4w) — watch for pressure"
+    trend_4w_b = (current - d4w) / 1000  # convert delta to billions for display
+    if trend_4w_b > 100:
+        pattern = f"Rising +${trend_4w_b:.0f}B (4w) — reservoir refilling"
+    elif trend_4w_b < -100:
+        pattern = f"Draining −${abs(trend_4w_b):.0f}B (4w) — watch for pressure"
     else:
         pattern = "Stable (4w) — no significant drainage"
 
     return {
-        "name":       "Fed Reserve Balances",
-        "city_label": CITY_LABELS["reserves"],
-        "current":    _fmt_trillions(current),
+        "name":        "Fed Reserve Balances",
+        "city_label":  CITY_LABELS["reserves"],
+        "current":     _fmt_millions(current),
         "current_raw": current,
-        "d4w":        _delta_str(current, d4w),
-        "d13w":       _delta_str(current, d13w),
-        "percentile": pctile,
-        "alert":      alert,
+        "current_raw_b": current / 1000,   # billions — used by net liquidity
+        "d4w":         _delta_str_millions(current, d4w),
+        "d13w":        _delta_str_millions(current, d13w),
+        "percentile":  pctile,
+        "alert":       alert,
         "alert_level": alert_level,
-        "pattern":    pattern,
-        "spark":      _spark(vals),
-        "source":     f"FRED: {SERIES['reserves']}",
+        "pattern":     pattern,
+        "spark":       [v / 1000 for v in _spark(vals)],  # display in billions
+        "source":      f"FRED: {SERIES['reserves']}",
     }
 
 
@@ -260,37 +288,39 @@ def _build_tga_card(obs: list[tuple[str, float]]) -> dict:
 
     # TGA rising = Treasury hoarding = drains reserves = bearish liquidity
     # TGA falling = Treasury spending = injects reserves = bullish liquidity
-    if current >= 800:
+    # Raw values in MILLIONS — $800B = 800,000M  |  $500B = 500,000M  |  $100B = 100,000M
+    if current >= 800_000:
         alert_level, alert = "notable", "High balance — Treasury withholding liquidity"
-    elif current >= 500:
+    elif current >= 500_000:
         alert_level, alert = "none", "Moderate — normal operating range"
-    elif current <= 100:
+    elif current <= 100_000:
         alert_level, alert = "extreme", "Near-empty — debt ceiling or spending surge"
     else:
         alert_level, alert = "none", "Low — Treasury injecting liquidity"
 
-    trend_4w = current - d4w
-    if trend_4w > 100:
-        pattern = f"Rising +${trend_4w:.0f}B (4w) — Treasury filling bucket, draining reserves"
-    elif trend_4w < -100:
-        pattern = f"Falling −${abs(trend_4w):.0f}B (4w) — Treasury spending, injecting liquidity"
+    trend_4w_b = (current - d4w) / 1000  # delta in billions
+    if trend_4w_b > 100:
+        pattern = f"Rising +${trend_4w_b:.0f}B (4w) — Treasury filling bucket, draining reserves"
+    elif trend_4w_b < -100:
+        pattern = f"Falling −${abs(trend_4w_b):.0f}B (4w) — Treasury spending, injecting liquidity"
     else:
         pattern = "Stable (4w)"
 
     return {
-        "name":       "Treasury General Account",
-        "city_label": CITY_LABELS["tga"],
-        "current":    _fmt_trillions(current),
+        "name":        "Treasury General Account",
+        "city_label":  CITY_LABELS["tga"],
+        "current":     _fmt_millions(current),
         "current_raw": current,
-        "d4w":        _delta_str(current, d4w),
-        "d13w":       _delta_str(current, d13w),
-        "percentile": pctile,
-        "alert":      alert,
+        "current_raw_b": current / 1000,   # billions — used by net liquidity
+        "d4w":         _delta_str_millions(current, d4w),
+        "d13w":        _delta_str_millions(current, d13w),
+        "percentile":  pctile,
+        "alert":       alert,
         "alert_level": alert_level,
-        "pattern":    pattern,
-        "spark":      _spark(vals),
-        "source":     f"FRED: {SERIES['tga']}",
-        "note":       "Rising TGA = drains reserves. Falling TGA = injects liquidity.",
+        "pattern":     pattern,
+        "spark":       [v / 1000 for v in _spark(vals)],  # display in billions
+        "source":      f"FRED: {SERIES['tga']}",
+        "note":        "Rising TGA = drains reserves. Falling TGA = injects liquidity.",
     }
 
 
@@ -304,8 +334,9 @@ def _build_rrp_card(obs: list[tuple[str, float]]) -> dict:
 
     pctile = _pct_rank(vals, current)
 
+    # RRPONTSYD is already in billions USD — thresholds are correct as-is
     # RRP high = liquidity parked at Fed = not in system = tighter
-    # RRP falling toward zero = buffer depleted, system more exposed
+    # RRP near zero = buffer depleted, system more exposed
     if current >= 500:
         alert_level, alert = "notable", "High — large liquidity buffer parked at Fed"
     elif current >= 100:
@@ -317,26 +348,27 @@ def _build_rrp_card(obs: list[tuple[str, float]]) -> dict:
 
     trend_5d = current - d5
     if trend_5d > 50:
-        pattern = f"Rising +${trend_5d:.0f}B (5d) — liquidity moving into RRP (tightening)"
+        pattern = f"Rising +${trend_5d:.1f}B (5d) — liquidity moving into RRP (tightening)"
     elif trend_5d < -50:
-        pattern = f"Falling −${abs(trend_5d):.0f}B (5d) — liquidity leaving RRP (easing)"
+        pattern = f"Falling −${abs(trend_5d):.1f}B (5d) — liquidity leaving RRP (easing)"
     else:
         pattern = "Stable (5d)"
 
     return {
-        "name":       "Overnight Reverse Repo (RRP)",
-        "city_label": CITY_LABELS["rrp"],
-        "current":    _fmt_trillions(current),
+        "name":        "Overnight Reverse Repo (RRP)",
+        "city_label":  CITY_LABELS["rrp"],
+        "current":     _fmt_billions(current),
         "current_raw": current,
-        "d5d":        _delta_str(current, d5),
-        "d20d":       _delta_str(current, d20),
-        "percentile": pctile,
-        "alert":      alert,
+        "current_raw_b": current,   # already billions
+        "d5d":         _delta_str_billions(current, d5),
+        "d20d":        _delta_str_billions(current, d20),
+        "percentile":  pctile,
+        "alert":       alert,
         "alert_level": alert_level,
-        "pattern":    pattern,
-        "spark":      _spark(vals),
-        "source":     f"FRED: {SERIES['rrp']}",
-        "note":       "High RRP = cash parked at Fed. Draining RRP = moving into system.",
+        "pattern":     pattern,
+        "spark":       _spark(vals),
+        "source":      f"FRED: {SERIES['rrp']}",
+        "note":        "High RRP = cash parked at Fed. Draining RRP = moving into system.",
     }
 
 
@@ -350,8 +382,9 @@ def _build_sofr_card(obs: list[tuple[str, float]]) -> dict:
 
     pctile = _pct_rank(vals, current)
 
-    # SOFR above IORB = repo stress
-    iorb_proxy = 5.15   # update this if IORB changes; could also pull IORB from FRED
+    # SOFR vs IORB — IORB moves with Fed funds target; update if Fed hikes/cuts again
+    # Current IORB after 2025 cuts: ~4.40% (Fed funds target 4.25–4.50%)
+    iorb_proxy = 4.40
 
     if current > iorb_proxy + 0.10:
         alert_level, alert = "extreme", f"Above IORB proxy — repo market stressed"
@@ -439,16 +472,19 @@ def _build_m2_card(obs: list[tuple[str, float]]) -> dict:
 
     yoy_pct = (current - d52w) / d52w * 100 if d52w else 0
 
-    if yoy_pct >= 8:
-        alert_level, alert = "extreme", f"M2 expanding fast +{yoy_pct:.1f}% YoY — aggressive liquidity creation"
-    elif yoy_pct >= 4:
+    # Calibrated to historical M2 growth norms (~4-5% is healthy/normal post-pandemic)
+    if yoy_pct >= 10:
+        alert_level, alert = "extreme", f"M2 expanding fast +{yoy_pct:.1f}% YoY — well above trend"
+    elif yoy_pct >= 6:
         alert_level, alert = "notable", f"M2 growing +{yoy_pct:.1f}% YoY — above-trend expansion"
+    elif yoy_pct >= 2:
+        alert_level, alert = "none", f"M2 +{yoy_pct:.1f}% YoY — normal growth"
     elif yoy_pct <= -2:
         alert_level, alert = "extreme", f"M2 contracting {yoy_pct:.1f}% YoY — rare, historically bearish"
     elif yoy_pct <= 0:
         alert_level, alert = "notable", f"M2 flat/declining {yoy_pct:.1f}% YoY — tightening total supply"
     else:
-        alert_level, alert = "none", f"M2 +{yoy_pct:.1f}% YoY — normal growth"
+        alert_level, alert = "none", f"M2 +{yoy_pct:.1f}% YoY — below-trend but positive"
 
     qoq_delta = current - d13w
     if qoq_delta > 200:
@@ -459,32 +495,35 @@ def _build_m2_card(obs: list[tuple[str, float]]) -> dict:
         pattern = f"QoQ {'+' if qoq_delta >= 0 else ''}${qoq_delta:.0f}B — stable"
 
     return {
-        "name":       "M2 Money Supply",
-        "city_label": CITY_LABELS["m2"],
-        "current":    _fmt_trillions(current),
+        "name":        "M2 Money Supply",
+        "city_label":  CITY_LABELS["m2"],
+        "current":     _fmt_billions(current),
         "current_raw": current,
-        "yoy":        f"{'+' if yoy_pct >= 0 else ''}{yoy_pct:.1f}%",
-        "qoq":        _delta_str(current, d13w),
-        "percentile": pctile,
-        "alert":      alert,
+        "yoy":         f"{'+' if yoy_pct >= 0 else ''}{yoy_pct:.1f}%",
+        "qoq":         _delta_str_billions(current, d13w),
+        "percentile":  pctile,
+        "alert":       alert,
         "alert_level": alert_level,
-        "pattern":    pattern,
-        "spark":      _spark(vals),
-        "source":     f"FRED: {SERIES['m2']}",
-        "note":       "Total dollar liquidity in the broader system. Rising M2 historically leads BTC by 3–6m.",
+        "pattern":     pattern,
+        "spark":       _spark(vals),
+        "source":      f"FRED: {SERIES['m2']}",
+        "note":        "Total dollar liquidity in the broader system. Rising M2 historically leads BTC by 3–6m.",
     }
 
 
 def _build_net_liquidity(reserves: dict, tga: dict, rrp: dict) -> dict:
     """
     Net Liquidity = Fed Reserves + RRP - TGA
-    The 'water actually flowing' composite. Rising = bullish macro backdrop for BTC.
+    All components normalized to BILLIONS before summing.
+    Reserves and TGA arrive from FRED in millions → divide by 1000.
+    RRP already in billions.
     """
-    r   = reserves.get("current_raw")
-    t   = tga.get("current_raw")
-    rrp_v = rrp.get("current_raw")
+    # Use pre-converted billions fields where available, fall back to raw conversion
+    r_b   = reserves.get("current_raw_b")   # billions
+    t_b   = tga.get("current_raw_b")        # billions
+    rrp_b = rrp.get("current_raw_b")        # billions (already correct)
 
-    if any(v is None for v in [r, t, rrp_v]):
+    if any(v is None for v in [r_b, t_b, rrp_b]):
         return {
             "name":       "Net Liquidity",
             "city_label": CITY_LABELS["net_liquidity"],
@@ -492,16 +531,17 @@ def _build_net_liquidity(reserves: dict, tga: dict, rrp: dict) -> dict:
             "error":      "One or more components unavailable",
         }
 
-    net = r + rrp_v - t
+    net_b = r_b + rrp_b - t_b  # all in billions
 
-    # Interpret: historical range roughly $4T–$6.5T in recent cycle
-    if net >= 6000:
-        alert_level, alert = "extreme", "Abundant — city fountains fully pressurized"
-    elif net >= 5000:
+    # Thresholds in billions ($2.25T = 2250B, $2.5T = 2500B, etc.)
+    # Current environment: reserves ~$3.08T, TGA ~$828B, RRP ~$0B → net ~$2.25T
+    if net_b >= 3_500:
+        alert_level, alert = "none", "Abundant — city fountains fully pressurized"
+    elif net_b >= 2_750:
         alert_level, alert = "none", "Comfortable — above-average liquidity"
-    elif net >= 4000:
-        alert_level, alert = "none", "Moderate — mid-range liquidity"
-    elif net >= 3000:
+    elif net_b >= 2_000:
+        alert_level, alert = "notable", "Moderate — mid-range, watch for tightening"
+    elif net_b >= 1_500:
         alert_level, alert = "notable", "Tightening — approaching historical stress levels"
     else:
         alert_level, alert = "extreme", "Scarce — system under pressure"
@@ -509,17 +549,17 @@ def _build_net_liquidity(reserves: dict, tga: dict, rrp: dict) -> dict:
     return {
         "name":        "Net Liquidity",
         "city_label":  CITY_LABELS["net_liquidity"],
-        "current":     _fmt_trillions(net),
-        "current_raw": net,
+        "current":     _fmt_billions(net_b),
+        "current_raw": net_b,
         "formula":     "Reserves + RRP − TGA",
         "components": {
-            "reserves": _fmt_trillions(r),
-            "rrp":      _fmt_trillions(rrp_v),
-            "tga":      _fmt_trillions(t),
+            "reserves": _fmt_billions(r_b),
+            "rrp":      _fmt_billions(rrp_b),
+            "tga":      _fmt_billions(t_b),
         },
         "alert":       alert,
         "alert_level": alert_level,
-        "pattern":     f"Reserves ${r:.0f}B + RRP ${rrp_v:.0f}B − TGA ${t:.0f}B",
+        "pattern":     f"Reserves ${r_b:.0f}B + RRP ${rrp_b:.1f}B − TGA ${t_b:.0f}B",
         "note":        "Rising net liquidity historically leads BTC price by 4–8 weeks.",
     }
 
@@ -551,7 +591,7 @@ def _build_liquidity_metrics() -> dict:
 
     if tga.get("alert_level") == "notable" and "High" in tga.get("alert", ""):
         signals.append(("headwind", "TGA elevated — Treasury hoarding, draining reserves"))
-    elif tga.get("current_raw") and tga["current_raw"] < 300:
+    elif tga.get("current_raw_b") is not None and tga["current_raw_b"] < 300:
         signals.append(("tailwind", "TGA low — Treasury injecting liquidity"))
 
     if rrp.get("alert_level") == "extreme":
