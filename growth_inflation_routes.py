@@ -87,8 +87,8 @@ FRED_SERIES = {
     # ── Growth / Employment ────────────────────────────────────────────────
     "payrolls":  ("PAYEMS",        "monthly",   "thousands"),
     "unrate":    ("UNRATE",        "monthly",   "pct"),
-    "claims":    ("ICSA",          "weekly",    "thousands"),
-    "cont_claims":("CCSA",         "weekly",    "thousands"),
+    "claims":    ("ICSA",          "weekly",    "number"),     # raw count, NOT thousands
+    "cont_claims":("CCSA",         "weekly",    "number"),     # raw count, NOT thousands
     "jolts":     ("JTSJOL",        "monthly",   "thousands"),
     "gdp":       ("A191RL1Q225SBEA","quarterly","pct"),
     "retail":    ("RSAFS",         "monthly",   "millions"),
@@ -209,6 +209,51 @@ def _fmt_num(v: float | None, digits: int = 1) -> str:
         return "—"
     return f"{v:.{digits}f}"
 
+
+def _fmt_count(value: float | None, native_unit: str, signed: bool = False, prefix: str = "") -> str:
+    """
+    Format a raw FRED value as a human-readable count with automatic
+    K / M / B scaling, based on the series' native FRED unit.
+
+    native_unit:
+      "number"    — raw count (e.g. ICSA initial claims, reported as actual people)
+      "thousands" — FRED reports in thousands (e.g. PAYEMS, JTSJOL)
+      "millions"  — FRED reports in millions (e.g. RSAFS)
+
+    Always normalizes to an actual count first, then picks the
+    appropriate K/M/B suffix — so a claims value of 229000 (native
+    "number") and a payrolls value of 159001 (native "thousands",
+    i.e. 159,001,000 actual jobs) both scale correctly instead of
+    having "K" naively appended to whatever FRED returned.
+    """
+    if value is None:
+        return "—"
+
+    if native_unit == "thousands":
+        actual = value * 1_000
+    elif native_unit == "millions":
+        actual = value * 1_000_000
+    else:
+        actual = value
+
+    if signed:
+        sign = "+" if actual >= 0 else "-"
+    else:
+        sign = "-" if actual < 0 else ""
+
+    abs_actual = abs(actual)
+
+    if abs_actual >= 1_000_000_000:
+        scaled = f"{abs_actual / 1_000_000_000:.1f}B"
+    elif abs_actual >= 1_000_000:
+        scaled = f"{abs_actual / 1_000_000:.1f}M"
+    elif abs_actual >= 1_000:
+        scaled = f"{abs_actual / 1_000:.0f}K"
+    else:
+        scaled = f"{abs_actual:.0f}"
+
+    return f"{sign}{prefix}{scaled}"
+
 # ── Inflation card builder ────────────────────────────────────────────────────
 
 def _inflation_card(
@@ -306,6 +351,29 @@ def _inflation_card(
         "spark":        _spark(vals),
     }
 
+# ── Energy commodity alert config ──────────────────────────────────────────────
+# Percentile-based thresholds (over the 252-day / 104-week lookback), calibrated
+# per-commodity. Replaces the old absolute-dollar thresholds, which were tuned
+# for oil's $50-100 range and produced nonsensical reads when applied to
+# gasoline's $2-5 range (e.g. gasoline at its 94th percentile was being labeled
+# "soft — disinflationary" because $3.99 < $50).
+ENERGY_ALERT_CONFIG = {
+    "oil": {
+        "high_pct": 75, "extreme_pct": 90, "low_pct": 20,
+        "extreme_label": "Energy prices elevated — inflationary pressure",
+        "high_label":    "Energy prices high — adding pipe temperature",
+        "low_label":     "Energy prices soft — disinflationary input",
+        "normal_label":  "Energy prices moderate",
+    },
+    "gasoline": {
+        "high_pct": 75, "extreme_pct": 90, "low_pct": 20,
+        "extreme_label": "Gasoline near highs — consumer inflation headline risk",
+        "high_label":    "Gasoline elevated — consumer cost pressure building",
+        "low_label":     "Gasoline soft — disinflationary for consumers",
+        "normal_label":  "Gasoline in normal range",
+    },
+}
+
 # ── Commodity card builder ────────────────────────────────────────────────────
 
 def _commodity_card(key: str, obs: list[tuple[str, float]], unit: str = "$") -> dict:
@@ -327,14 +395,22 @@ def _commodity_card(key: str, obs: list[tuple[str, float]], unit: str = "$") -> 
     chg20 = pct(current, d20)
     chg_yoy = pct(current, d252)
 
-    if current >= 90:
-        alert_level, alert = "extreme", "Energy prices elevated — inflationary pressure"
-    elif current >= 75:
-        alert_level, alert = "notable", "Energy prices high — adding pipe temperature"
-    elif current <= 50:
-        alert_level, alert = "none", "Energy prices soft — disinflationary input"
+    # Percentile-based alert — calibrated per-commodity, consistent with the
+    # percentile shown alongside it (avoids contradictions like "94th
+    # percentile" + "soft — disinflationary").
+    cfg     = ENERGY_ALERT_CONFIG.get(key, {})
+    hi_pct  = cfg.get("high_pct", 75)
+    ext_pct = cfg.get("extreme_pct", 90)
+    lo_pct  = cfg.get("low_pct", 20)
+
+    if pctile >= ext_pct:
+        alert_level, alert = "extreme", cfg.get("extreme_label", f"{key} near 52w highs")
+    elif pctile >= hi_pct:
+        alert_level, alert = "notable", cfg.get("high_label", f"{key} elevated")
+    elif pctile <= lo_pct:
+        alert_level, alert = "none", cfg.get("low_label", f"{key} near 52w lows")
     else:
-        alert_level, alert = "none", "Energy prices moderate"
+        alert_level, alert = "none", cfg.get("normal_label", "Normal range")
 
     return {
         "key":          key,
@@ -356,43 +432,42 @@ def _commodity_card(key: str, obs: list[tuple[str, float]], unit: str = "$") -> 
 def _employment_card(
     key: str,
     obs: list[tuple[str, float]],
-    invert_alert: bool = False,  # True for unemployment, claims — rising is bad
-    unit: str = "",
-    precision: int = 0,
+    native_unit: str,    # "number" | "thousands" | "millions" | "pct" | "index"
+    precision: int = 1,
 ) -> dict:
     """
     Generic employment/growth card.
-    invert_alert: if True, HIGH values are bearish (unemployment, claims)
+
+    native_unit drives formatting:
+      "number" / "thousands" / "millions" → auto K/M/B scaling via _fmt_count.
+        ICSA (claims) and CCSA (cont_claims) are "number" — raw counts.
+        PAYEMS (payrolls) and JTSJOL (jolts) are "thousands".
+        RSAFS (retail) is "millions".
+      "pct"   → level shown as "%", deltas shown as "pp" (percentage points).
+      "index" → plain numbers, no unit suffix (sentiment, ISM).
+
+    Every key gets a dedicated alert branch — no generic value-echo fallback.
     """
     city_label = CITY_LABELS.get(key, "")
     if not obs:
         return {"key": key, "city_label": city_label, "current": "—", "error": "FRED unavailable"}
 
-    vals    = [v for _, v in obs]
-    current = vals[-1]
+    vals     = [v for _, v in obs]
+    current  = vals[-1]
     latest_date = obs[-1][0]
-    prev    = vals[-2] if len(vals) >= 2 else vals[0]
-    prev_3m = vals[-4] if len(vals) >= 4 else vals[0]
+    prev     = vals[-2]  if len(vals) >= 2  else vals[0]
+    prev_3m  = vals[-4]  if len(vals) >= 4  else vals[0]
     prev_12m = vals[-13] if len(vals) >= 13 else vals[0]
-    pctile  = _pct_rank(vals, current)
+    pctile   = _pct_rank(vals, current)
 
-    chg_mom = round(current - prev, precision)
-    chg_3m  = round(current - prev_3m, precision)
-    chg_yoy = round(current - prev_12m, precision)
+    chg_mom = current - prev
+    chg_3m  = current - prev_3m
+    chg_yoy = current - prev_12m
 
-    # Effective percentile for alert (inverted for unemployment/claims)
-    effective_pctile = (100 - pctile) if invert_alert else pctile
+    is_count = native_unit in ("number", "thousands", "millions")
+    prefix   = "$" if key == "retail" else ""
 
-    if effective_pctile >= 80:
-        alert_level = "extreme"
-    elif effective_pctile >= 65:
-        alert_level = "notable"
-    elif effective_pctile <= 20:
-        alert_level = "none"
-    else:
-        alert_level = "none"
-
-    # Key-specific alerts
+    # ── Key-specific alerts (every key has a dedicated branch) ──
     if key == "unrate":
         if current >= 5.0:
             alert_level, alert = "extreme", f"{current:.1f}% — elevated unemployment, recession risk"
@@ -402,15 +477,34 @@ def _employment_card(
             alert_level, alert = "none", f"{current:.1f}% — tight labor market"
         else:
             alert_level, alert = "none", f"{current:.1f}% — normal range"
+
     elif key == "claims":
-        if current >= 300:
-            alert_level, alert = "extreme", f"{current:.0f}K claims — labor market deteriorating"
-        elif current >= 250:
-            alert_level, alert = "notable", f"{current:.0f}K claims — elevated, watch trend"
-        elif current <= 200:
-            alert_level, alert = "none", f"{current:.0f}K claims — healthy"
+        # ICSA is reported in raw "number" units (e.g. 229000 = 229,000 claims).
+        # Convert to "K" for the conventional "229K claims" framing.
+        claims_k = current / 1000
+        label = _fmt_count(current, native_unit)
+        if claims_k >= 300:
+            alert_level, alert = "extreme", f"{label} claims — labor market deteriorating"
+        elif claims_k >= 250:
+            alert_level, alert = "notable", f"{label} claims — elevated, watch trend"
+        elif claims_k <= 200:
+            alert_level, alert = "none", f"{label} claims — healthy"
         else:
-            alert_level, alert = "none", f"{current:.0f}K claims — normal range"
+            alert_level, alert = "none", f"{label} claims — normal range"
+
+    elif key == "cont_claims":
+        # CCSA is also raw "number" units. Low percentile = near 2yr lows =
+        # healthy (short unemployment duration) — NOT an alert. High
+        # percentile = extended unemployment building.
+        cc_k  = current / 1000
+        label = _fmt_count(current, native_unit)
+        if cc_k >= 2000:
+            alert_level, alert = "notable", f"{label} continuing claims — extended unemployment rising"
+        elif cc_k <= 1700:
+            alert_level, alert = "none", f"{label} continuing claims — short duration, healthy labor market"
+        else:
+            alert_level, alert = "none", f"{label} continuing claims — normal range"
+
     elif key == "payrolls":
         if chg_mom <= 0:
             alert_level, alert = "extreme", "Payrolls negative — potential recession signal"
@@ -420,6 +514,16 @@ def _employment_card(
             alert_level, alert = "none", f"+{chg_mom:.0f}K — strong job creation"
         else:
             alert_level, alert = "none", f"+{chg_mom:.0f}K — healthy trend"
+
+    elif key == "jolts":
+        label = _fmt_count(current, native_unit)
+        if pctile >= 80:
+            alert_level, alert = "notable", f"{label} openings — near highs, labor market still tight"
+        elif pctile <= 20:
+            alert_level, alert = "notable", f"{label} openings — near lows, labor market loosening"
+        else:
+            alert_level, alert = "none", f"{label} openings — normal range"
+
     elif key == "gdp":
         if current < 0:
             alert_level, alert = "extreme", f"{current:.1f}% — contraction (recession territory)"
@@ -429,15 +533,16 @@ def _employment_card(
             alert_level, alert = "none", f"{current:.1f}% — above-trend growth"
         else:
             alert_level, alert = "none", f"{current:.1f}% — moderate growth"
-    elif key == "ism":
-        if current < 45:
-            alert_level, alert = "extreme", f"ISM {current:.1f} — manufacturing contraction"
-        elif current < 50:
-            alert_level, alert = "notable", f"ISM {current:.1f} — below expansion threshold"
-        elif current >= 55:
-            alert_level, alert = "none", f"ISM {current:.1f} — strong expansion"
+
+    elif key == "retail":
+        label = _fmt_count(current, native_unit, prefix=prefix)
+        if chg_mom <= 0:
+            alert_level, alert = "notable", f"{label} — retail sales declining, consumer pulling back"
+        elif pctile >= 90:
+            alert_level, alert = "none", f"{label} — retail sales near highs, consumer spending robust"
         else:
-            alert_level, alert = "none", f"ISM {current:.1f} — moderate expansion"
+            alert_level, alert = "none", f"{label} — retail sales steady"
+
     elif key == "sentiment":
         if current <= 60:
             alert_level, alert = "extreme", f"Sentiment {current:.0f} — recession-level pessimism"
@@ -447,18 +552,44 @@ def _employment_card(
             alert_level, alert = "none", f"Sentiment {current:.0f} — elevated consumer confidence"
         else:
             alert_level, alert = "none", f"Sentiment {current:.0f} — normal range"
-    else:
-        alert = f"{current:,.{precision}f}{unit}"
 
-    # Format values
-    if precision == 0:
-        curr_str = f"{current:,.0f}{unit}"
-        mom_str  = f"{_sign(chg_mom)}{chg_mom:,.0f}{unit}"
-        yoy_str  = f"{_sign(chg_yoy)}{chg_yoy:,.0f}{unit}"
+    elif key == "inf_exp":
+        if pctile >= 75:
+            alert_level, alert = "notable", f"{current:.1f}% — expectations elevated, risk of de-anchoring"
+        elif pctile <= 20:
+            alert_level, alert = "none", f"{current:.1f}% — expectations low, well anchored"
+        else:
+            alert_level, alert = "none", f"{current:.1f}% — normal range"
+
+    elif key == "ism":
+        if current < 45:
+            alert_level, alert = "extreme", f"ISM {current:.1f} — manufacturing contraction"
+        elif current < 50:
+            alert_level, alert = "notable", f"ISM {current:.1f} — below expansion threshold"
+        elif current >= 55:
+            alert_level, alert = "none", f"ISM {current:.1f} — strong expansion"
+        else:
+            alert_level, alert = "none", f"ISM {current:.1f} — moderate expansion"
+
     else:
-        curr_str = f"{current:.{precision}f}{unit}"
-        mom_str  = f"{_sign(chg_mom)}{chg_mom:.{precision}f}{unit}"
-        yoy_str  = f"{_sign(chg_yoy)}{chg_yoy:.{precision}f}{unit}"
+        alert_level, alert = "none", "—"
+
+    # ── Format values based on native unit ──
+    if is_count:
+        curr_str = _fmt_count(current, native_unit, prefix=prefix)
+        mom_str  = _fmt_count(chg_mom, native_unit, signed=True, prefix=prefix)
+        qoq_str  = _fmt_count(chg_3m,  native_unit, signed=True, prefix=prefix)
+        yoy_str  = _fmt_count(chg_yoy, native_unit, signed=True, prefix=prefix)
+    elif native_unit == "pct":
+        curr_str = f"{current:.{precision}f}%"
+        mom_str  = f"{'+' if chg_mom >= 0 else ''}{chg_mom:.{precision}f}pp"
+        qoq_str  = f"{'+' if chg_3m  >= 0 else ''}{chg_3m:.{precision}f}pp"
+        yoy_str  = f"{'+' if chg_yoy >= 0 else ''}{chg_yoy:.{precision}f}pp"
+    else:  # "index" — plain numbers, no suffix
+        curr_str = f"{current:.{precision}f}"
+        mom_str  = f"{'+' if chg_mom >= 0 else ''}{chg_mom:.{precision}f}"
+        qoq_str  = f"{'+' if chg_3m  >= 0 else ''}{chg_3m:.{precision}f}"
+        yoy_str  = f"{'+' if chg_yoy >= 0 else ''}{chg_yoy:.{precision}f}"
 
     return {
         "key":          key,
@@ -468,7 +599,7 @@ def _employment_card(
         "latest_date":  latest_date,
         "mom":          mom_str,
         "mom_raw":      chg_mom,
-        "qoq":          f"{_sign(chg_3m)}{chg_3m:,.{precision}f}{unit}",
+        "qoq":          qoq_str,
         "yoy":          yoy_str,
         "percentile":   pctile,
         "alert":        alert,
@@ -588,12 +719,15 @@ def _city_assessment(cards: dict) -> dict:
             tailwinds.append(f"Payrolls +{payrolls_raw:.0f}K — healthy job creation")
 
     if claims_raw is not None:
-        if claims_raw >= 300:
-            headwinds.append(f"Claims {claims_raw:.0f}K — rapid labor market deterioration")
-        elif claims_raw >= 250:
-            headwinds.append(f"Claims {claims_raw:.0f}K — rising, watch for acceleration")
-        elif claims_raw <= 200:
-            tailwinds.append(f"Claims {claims_raw:.0f}K — low, labor market healthy")
+        # ICSA reports raw counts (e.g. 229000), not thousands — convert to
+        # "K" before comparing against the 200/250/300 thresholds.
+        claims_k = claims_raw / 1000
+        if claims_k >= 300:
+            headwinds.append(f"Claims {claims_k:.0f}K — rapid labor market deterioration")
+        elif claims_k >= 250:
+            headwinds.append(f"Claims {claims_k:.0f}K — rising, watch for acceleration")
+        elif claims_k <= 200:
+            tailwinds.append(f"Claims {claims_k:.0f}K — low, labor market healthy")
 
     if ism_raw is not None:
         if ism_raw < 45:
@@ -623,6 +757,10 @@ def _city_assessment(cards: dict) -> dict:
         regime       = "Goldilocks"
         regime_level = "none"
         regime_read  = "Growth moderating from hot, employment stable, no recession signal. This is the ideal environment — inflation can cool while the city keeps earning income. BTC historically performs well here."
+    elif n_hw == 1 and n_tw >= 2:
+        regime       = "Solid — One Watch Item"
+        regime_level = "none"
+        regime_read  = "Growth backdrop is broadly healthy with one area to monitor. Not a meaningful drag on its own, but worth tracking for follow-through over the next few releases."
     elif n_tw >= 1 and n_hw == 0:
         regime       = "Solid Growth"
         regime_level = "none"
@@ -641,7 +779,7 @@ def _city_assessment(cards: dict) -> dict:
         "signals":      signals,
         "goldilocks_check": {
             "growth_slowing":  gdp_raw is not None and 1.5 <= gdp_raw <= 2.5,
-            "employment_stable": claims_raw is not None and claims_raw <= 240,
+            "employment_stable": claims_raw is not None and (claims_raw / 1000) <= 240,
             "no_recession":    gdp_raw is not None and gdp_raw >= 0,
         },
     }
@@ -696,17 +834,20 @@ def _build_metrics() -> dict:
     }
 
     # ── Growth / employment cards ──
+    # native_unit pulled from FRED_SERIES[key][2] — single source of truth for
+    # each series' reporting unit (claims/cont_claims are "number", payrolls/
+    # jolts are "thousands", retail is "millions", etc.)
     growth = {
-        "payrolls":   _employment_card("payrolls",   obs["payrolls"],   unit="K",  precision=0),
-        "unrate":     _employment_card("unrate",     obs["unrate"],     unit="%",  precision=1, invert_alert=True),
-        "claims":     _employment_card("claims",     obs["claims"],     unit="K",  precision=0, invert_alert=True),
-        "cont_claims":_employment_card("cont_claims",obs["cont_claims"],unit="K",  precision=0, invert_alert=True),
-        "jolts":      _employment_card("jolts",      obs["jolts"],      unit="K",  precision=0),
-        "gdp":        _employment_card("gdp",        obs["gdp"],        unit="%",  precision=1),
-        "retail":     _employment_card("retail",     obs["retail"],     unit="M",  precision=0),
-        "sentiment":  _employment_card("sentiment",  obs["sentiment"],  unit="",   precision=1),
-        "inf_exp":    _employment_card("inf_exp",    obs["inf_exp"],    unit="%",  precision=1),
-        "ism":        _employment_card("ism",        obs["ism"],        unit="",   precision=1),
+        "payrolls":    _employment_card("payrolls",    obs["payrolls"],    native_unit=FRED_SERIES["payrolls"][2]),
+        "unrate":      _employment_card("unrate",      obs["unrate"],      native_unit=FRED_SERIES["unrate"][2]),
+        "claims":      _employment_card("claims",      obs["claims"],      native_unit=FRED_SERIES["claims"][2]),
+        "cont_claims": _employment_card("cont_claims", obs["cont_claims"], native_unit=FRED_SERIES["cont_claims"][2]),
+        "jolts":       _employment_card("jolts",       obs["jolts"],       native_unit=FRED_SERIES["jolts"][2]),
+        "gdp":         _employment_card("gdp",         obs["gdp"],         native_unit=FRED_SERIES["gdp"][2]),
+        "retail":      _employment_card("retail",      obs["retail"],      native_unit=FRED_SERIES["retail"][2]),
+        "sentiment":   _employment_card("sentiment",   obs["sentiment"],   native_unit=FRED_SERIES["sentiment"][2]),
+        "inf_exp":     _employment_card("inf_exp",     obs["inf_exp"],     native_unit=FRED_SERIES["inf_exp"][2]),
+        "ism":         _employment_card("ism",         obs["ism"],         native_unit=FRED_SERIES["ism"][2]),
     }
 
     # ── Assessments ──
