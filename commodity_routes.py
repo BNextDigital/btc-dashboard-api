@@ -215,10 +215,26 @@ def _commodity_card(key: str, series: pd.Series | None) -> dict:
 
 # ── Cross-commodity reads ─────────────────────────────────────────────────────
 
-def _copper_gold_ratio(copper: dict, gold: dict) -> dict:
+def _copper_gold_ratio(
+    copper: dict, gold: dict,
+    copper_series: pd.Series | None,
+    gold_series: pd.Series | None,
+) -> dict:
     """
     Copper/Gold ratio — economic activity vs safe-haven demand.
     Rising ratio = growth optimism. Falling ratio = risk-off / growth fear.
+
+    Percentile-based, computed from the actual historical ratio series
+    (Cu $/lb ÷ Au $/oz × 1000), rather than fixed absolute thresholds.
+
+    The previous version used hardcoded cutoffs (>0.35 / >0.25 / <0.15)
+    that were calibrated for the *unscaled* ratio (~0.0005-0.002), but the
+    code scales by 1000 before comparing (~0.5-2.5 in practice). At that
+    scale the ratio almost always exceeds 0.35, so the read was stuck on
+    "elevated — growth optimism" regardless of where conditions actually
+    sat historically — especially once gold re-rated sharply higher and
+    compressed the ratio toward the low end of its own range. Percentile
+    rank against the trailing series self-calibrates as both metals move.
     """
     cu = copper.get("current_raw")
     au = gold.get("current_raw")
@@ -226,29 +242,48 @@ def _copper_gold_ratio(copper: dict, gold: dict) -> dict:
     if cu is None or au is None or au == 0:
         return {"ratio": "—", "read": "Data unavailable", "alert_level": "none"}
 
-    # Copper is in $/lb, Gold in $/oz — ratio as-is is an indicator of direction
-    ratio = round(cu / au * 1000, 4)  # scale for readability
+    # Copper is in $/lb, Gold in $/oz — scale by 1000 for a readable ratio
+    current_ratio = round(cu / au * 1000, 4)
 
-    if ratio > 0.35:
-        read = "Ratio elevated — market pricing in solid industrial demand / growth optimism"
+    # Build the historical ratio series from the same lookback window used
+    # for the individual commodity cards, so the percentile reflects the
+    # ratio's own trailing range rather than a fixed cutoff.
+    ratio_series: list[float] | None = None
+    if copper_series is not None and gold_series is not None:
+        try:
+            aligned = pd.concat(
+                [copper_series.rename("cu"), gold_series.rename("au")],
+                axis=1, join="inner",
+            ).dropna()
+            if len(aligned) >= 10:
+                ratio_series = (aligned["cu"] / aligned["au"] * 1000).tolist()
+        except Exception as e:
+            print(f"[commodities] copper/gold ratio series error: {e}")
+            ratio_series = None
+
+    pctile = _pct_rank(ratio_series, current_ratio) if ratio_series else 50
+
+    if pctile >= 75:
+        read  = "Ratio elevated vs its own range — industrial demand strong relative to gold, growth optimism"
         level = "none"
-    elif ratio > 0.25:
-        read = "Ratio moderate — balanced growth / safe-haven demand"
-        level = "none"
-    elif ratio < 0.15:
-        read = "Ratio depressed — gold dominating, growth fears elevated, risk-off"
+    elif pctile <= 25:
+        read  = "Ratio depressed vs its own range — gold dominating, growth fears elevated, risk-off"
         level = "notable"
     else:
-        read = "Ratio low — mild safe-haven preference"
+        read  = "Ratio in normal range — balanced growth / safe-haven demand"
         level = "none"
 
-    return {
-        "ratio":       f"{ratio:.4f}",
-        "ratio_raw":   ratio,
+    result = {
+        "ratio":       f"{current_ratio:.4f}",
+        "ratio_raw":   current_ratio,
         "read":        read,
         "alert_level": level,
-        "note":        "Cu/Au rising = growth confidence. Falling = defensiveness / risk-off.",
+        "note":        "Cu/Au rising = growth confidence. Falling = defensiveness / risk-off. Percentile is vs the ratio's own 52w range.",
     }
+    if ratio_series:
+        result["percentile"] = pctile
+        result["spark"] = _spark(ratio_series, 20)
+    return result
 
 
 def _energy_complex_read(wti: dict, natgas: dict) -> dict:
@@ -360,7 +395,10 @@ def _build_commodity_metrics() -> dict:
 
     all_cards = {"energy": energy, "metals": metals, "grains": grains}
 
-    cu_gold  = _copper_gold_ratio(metals["copper"], metals["gold"])
+    cu_gold  = _copper_gold_ratio(
+        metals["copper"], metals["gold"],
+        yf_data.get("copper"), yf_data.get("gold"),
+    )
     energy_r = _energy_complex_read(energy["wti"], energy["natgas"])
     assessment = _commodity_assessment(all_cards)
 
