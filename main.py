@@ -25,6 +25,7 @@ from growth_inflation_routes import growth_router
 from equity_routes import sector_flows_router     # keeps /sector-flows/metrics alive
 from commodity_routes import commodity_router
 from etf_aum_routes import etf_aum_router
+from leading_routes import leading_router
 
 
 
@@ -98,6 +99,7 @@ app.include_router(forex_router)
 app.include_router(growth_router)
 app.include_router(commodity_router) 
 app.include_router(etf_aum_router)# new
+app.include_router(leading_router)
 
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
 
