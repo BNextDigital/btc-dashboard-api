@@ -890,17 +890,16 @@ def _build_global_m2() -> dict:
 # Lead time: 1-2 weeks
 # ════════════════════════════════════════════════════════════════════════════
 
-CFTC_BTC_COMMODITY_CODE = "133741"   # CME BTC futures
-
+CFTC_BTC_CONTRACT_CODE = "133741"   # CME BTC futures — use contract market code, not commodity code
 
 def fetch_cot_btc() -> dict | None:
     """
     Fetches 52 weeks of COT data for BTC futures from the CFTC Socrata API.
-    Leveraged fund positioning is the primary signal.
+    Non-commercial positions (noncomm_*) are the leveraged fund proxy for this dataset.
     """
     try:
         resp = requests.get(CFTC_API_BASE, params={
-            "$where": f"cftc_commodity_code='{CFTC_BTC_COMMODITY_CODE}'",
+            "$where": f"cftc_contract_market_code='{CFTC_BTC_CONTRACT_CODE}'",
             "$order": "report_date_as_yyyy_mm_dd DESC",
             "$limit": 52,
         }, timeout=20)
@@ -914,37 +913,36 @@ def fetch_cot_btc() -> dict | None:
         return None
 
     try:
-        latest = rows[0]
-        lev_long  = float(latest.get("lev_money_positions_long_all",  0))
-        lev_short = float(latest.get("lev_money_positions_short_all", 0))
+        latest    = rows[0]
+        lev_long  = float(latest.get("noncomm_positions_long_all",  0))
+        lev_short = float(latest.get("noncomm_positions_short_all", 0))
         lev_net   = lev_long - lev_short
-        am_long   = float(latest.get("asset_mgr_positions_long_all",  0))
-        am_short  = float(latest.get("asset_mgr_positions_short_all", 0))
+        am_long   = float(latest.get("comm_positions_long_all",  0))
+        am_short  = float(latest.get("comm_positions_short_all", 0))
         total_oi  = float(latest.get("open_interest_all", 0))
         lev_net_pct = (lev_net / total_oi * 100) if total_oi else None
         report_date = latest.get("report_date_as_yyyy_mm_dd", "")[:10]
 
-        # 52-week range of lev_net_pct for percentile
         all_lev_nets = []
         for r in rows[1:]:
             try:
-                l = float(r.get("lev_money_positions_long_all",  0))
-                s = float(r.get("lev_money_positions_short_all", 0))
+                l  = float(r.get("noncomm_positions_long_all",  0))
+                s  = float(r.get("noncomm_positions_short_all", 0))
                 oi = float(r.get("open_interest_all", 1))
                 all_lev_nets.append((l - s) / oi * 100)
             except (ValueError, TypeError, ZeroDivisionError):
                 pass
 
         return {
-            "lev_long":      lev_long,
-            "lev_short":     lev_short,
-            "lev_net":       lev_net,
+            "lev_long":        lev_long,
+            "lev_short":       lev_short,
+            "lev_net":         lev_net,
             "asset_mgr_long":  am_long,
             "asset_mgr_short": am_short,
-            "total_oi":      total_oi,
-            "lev_net_pct":   round(lev_net_pct, 2) if lev_net_pct is not None else None,
-            "all_lev_nets":  all_lev_nets,
-            "report_date":   report_date,
+            "total_oi":        total_oi,
+            "lev_net_pct":     round(lev_net_pct, 2) if lev_net_pct is not None else None,
+            "all_lev_nets":    all_lev_nets,
+            "report_date":     report_date,
         }
     except (KeyError, ValueError, TypeError) as e:
         print(f"[leading] COT parse error: {e}")
