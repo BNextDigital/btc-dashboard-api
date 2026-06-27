@@ -350,14 +350,13 @@ def _get_risk_reversal_25d(instruments: list[dict], spot: float, target_days: in
 
 
 def fetch_options_metrics() -> dict | None:
-    """Fetch BTC spot, then 7d/30d ATM IV and 30d 25-delta risk reversal."""
-    # Get BTC spot price
-    price_data = _safe_get(f"{COINGECKO_BASE}/simple/price",
-                           _cg_headers(),
-                           {"ids": "bitcoin", "vs_currencies": "usd"})
-    if not price_data:
+    """Fetch BTC spot from Deribit index, then 7d/30d ATM IV and 25d risk reversal."""
+    # Use Deribit's own BTC index price — avoids CoinGecko rate limit entirely
+    index_data = _safe_get(f"{DERIBIT_BASE}/get_index_price",
+                           params={"index_name": "btc_usd"})
+    if not index_data:
         return None
-    spot = price_data.get("bitcoin", {}).get("usd")
+    spot = index_data.get("result", {}).get("index_price")
     if not spot:
         return None
 
