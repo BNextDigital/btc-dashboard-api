@@ -1265,29 +1265,23 @@ def fetch_basis_enhanced() -> dict | None:
     - 5-day trend direction
     - Days-to-expiry normalized basis (annualized is already DTX-adjusted)
     - 5-day momentum signal
-    Designed to be called from main.py's existing basis flow if preferred.
     """
     try:
         import yfinance as yf
         from datetime import date as dt_date
-        import math
 
         btc_future = yf.Ticker("BTC=F")
         hist       = btc_future.history(period="10d")
         if hist.empty:
             return None
-
         futures_px = float(hist["Close"].iloc[-1])
-        info       = btc_future.info or {}
 
-        # Spot price from CoinGecko
-        spot_data = requests.get(
-            f"{COINGECKO_BASE}/simple/price",
-            headers=_cg_headers(),
-            params={"ids": "bitcoin", "vs_currencies": "usd"},
-            timeout=10
-        ).json()
-        spot_px = spot_data.get("bitcoin", {}).get("usd")
+        # Spot price from Deribit index — avoids CoinGecko rate limit
+        spot_resp = _safe_get(f"{DERIBIT_BASE}/get_index_price",
+                              params={"index_name": "btc_usd"})
+        if not spot_resp:
+            return None
+        spot_px = spot_resp.get("result", {}).get("index_price")
         if not spot_px:
             return None
 
@@ -1303,17 +1297,18 @@ def fetch_basis_enhanced() -> dict | None:
             return None
         exp_year  = today.year + (next_q > 12)
         exp_month = next_q if next_q <= 12 else next_q - 12
+
         # Third Friday
-        first_day  = dt_date(exp_year, exp_month, 1)
-        first_fri  = first_day + timedelta(days=(4 - first_day.weekday()) % 7)
-        third_fri  = first_fri + timedelta(weeks=2)
+        first_day   = dt_date(exp_year, exp_month, 1)
+        first_fri   = first_day + timedelta(days=(4 - first_day.weekday()) % 7)
+        third_fri   = first_fri + timedelta(weeks=2)
         days_to_exp = max(1, (third_fri - today).days)
 
-        raw_basis    = (futures_px - spot_px) / spot_px * 100
-        annualized   = raw_basis * (365 / days_to_exp)
+        raw_basis  = (futures_px - spot_px) / spot_px * 100
+        annualized = raw_basis * (365 / days_to_exp)
 
         # Read last 10 basis snapshots for trend
-        hist_rows = _query_history(
+        hist_rows   = _query_history(
             "basis_enhanced_history",
             ["date", "annualized", "dtx_normalized", "trend_5d"], 10
         )
