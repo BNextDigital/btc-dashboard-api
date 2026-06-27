@@ -75,6 +75,12 @@ async def lifespan(app: FastAPI):
         _build_macro_metrics()
     except Exception:
         pass
+    try:
+        from leading_routes import _build_funding_cumulative, _build_tether_mints
+        _build_funding_cumulative()   # seeds day-1 funding snapshot
+        _build_tether_mints()         # seeds day-1 tether snapshot
+    except Exception:
+        pass
     yield
 
 # then app uses it
