@@ -43,6 +43,8 @@ import os, time, sqlite3, requests, threading
 from datetime import datetime, timedelta, date, timezone
 from pathlib import Path
 from fastapi import APIRouter
+# At the top of leading_routes.py, add:
+from data_sources import get_shared_coingecko, COINGECKO_BASE, _coingecko_headers, _cached_get
 
 leading_router = APIRouter(prefix="/leading")
 
@@ -600,13 +602,12 @@ def fetch_funding_cumulative() -> dict | None:
     then reads 30 days of stored daily rates from SQLite to compute
     cumulative cost. Stores today's daily rate for future calculations.
     """
-    # Fetch current funding rate from CoinGecko
+# Fetch current funding rate from shared CoinGecko cache
     try:
-        data = requests.get(
-            f"{COINGECKO_BASE}/derivatives",
-            headers=_cg_headers(),
-            timeout=10
-        ).json()
+        shared    = get_shared_coingecko()
+        data      = shared.get("derivatives")
+        if not data:
+            return None
         btc_perps = [
             m for m in data
             if m.get("index_id") == "BTC"
@@ -1040,20 +1041,18 @@ def _build_cot() -> dict:
 
 LARGE_MINT_THRESHOLD_USD = 500_000_000   # $500M in one day
 
-
 def fetch_tether_mints() -> dict | None:
     """
-    Fetches current USDT market cap from CoinGecko and computes daily delta
-    by comparing to yesterday's stored value in SQLite.
+    Fetches current USDT market cap from shared CoinGecko cache and computes
+    daily delta by comparing to yesterday's stored value in SQLite.
     """
     try:
-        data = requests.get(
+        data = _cached_get(
             f"{COINGECKO_BASE}/simple/price",
-            headers=_cg_headers(),
-            params={"ids": "tether", "vs_currencies": "usd", "include_market_cap": "true"},
-            timeout=10
-        ).json()
-        usdt_now = data.get("tether", {}).get("usd_market_cap")
+            _cg_headers(),
+            {"ids": "tether", "vs_currencies": "usd", "include_market_cap": "true"}
+        )
+        usdt_now = data.get("tether", {}).get("usd_market_cap") if data else None
         if not usdt_now:
             return None
     except Exception as e:
