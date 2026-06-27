@@ -1045,7 +1045,7 @@ def fetch_tether_mints() -> dict | None:
     Reads USDT supply from stablecoin_history.db (already populated by main.py)
     — zero extra CoinGecko calls.
     """
-    try:
+   try:
         import sqlite3
         db_path = DATA_DIR / "stablecoin_history.db"
         with sqlite3.connect(str(db_path)) as conn:
@@ -1055,6 +1055,9 @@ def fetch_tether_mints() -> dict | None:
         if not rows:
             return None
         usdt_now = rows[0][1]
+    except Exception as e:
+        print(f"[leading] tether fetch error: {e}")
+        return None
     # Look up yesterday's stored value
     hist = _query_history("tether_mint_history", ["date", "usdt_supply", "daily_change"], 30)
     yesterday_supply = hist[0]["usdt_supply"] if hist else None
