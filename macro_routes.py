@@ -1,47 +1,35 @@
 """
-macro_routes.py — Add these routes to your existing main.py
+macro_routes.py — migrated to shared cache layer
 
-CHANGE: Treasury yields now sourced from FRED (DGS1/DGS2/DGS3/DGS5/DGS10)
-        instead of yFinance (^IRX/^FVX/^TNX) — no more blank values.
-        FRED yields lag 1 business day (published next morning). That's fine
-        for a macro context dashboard — same as Bloomberg "last close".
+CHANGES FROM ORIGINAL:
+  - Removed: _fetch_fred_series(), _fetch_all_fred_yields(), _fetch_fred_hy_oas()
+  - Removed: _fetch_yfinance_bulk()
+  - Removed: import requests, import yfinance as yf  (no longer needed here)
+  - Added:   from shared.yf_cache import get_series as _yf
+  - Added:   from shared.fred_cache import get_series as _fred, get_series_df as _fred_df
+  - _build_macro_metrics() now reads from shared caches instead of fetching
 
-Data sources:
-  - FRED API (free key):    yields (DGS*), HY OAS (BAMLH0A0HYM2)
-  - yFinance (installed):   DXY, VIX, Nasdaq-100, VXN, S&P 500, Brent,
-                            Gold, Silver, Platinum, Copper
-
-Setup:
-  1. Get a free FRED API key at https://fred.stlouisfed.org/docs/api/api_key.html
-  2. Add to backend Railway env:  FRED_API_KEY=your_key_here
-  3. Drop this file alongside main.py in btc-dashboard-api/
-  4. Add to bottom of main.py:
-       from macro_routes import macro_router
-       app.include_router(macro_router)
-
-Endpoints:
-  GET /macro/metrics        — full snapshot (yields, curve, DXY, VIX, HY OAS,
-                              equities, commodities)
-  GET /macro/history?days=  — SQLite history (default 90 days)
-  GET /macro/cache/flush    — force cache refresh
+Everything else — formatters, SQLite helpers, routes, cache logic — unchanged.
 """
 
-import os, time, sqlite3, requests
+import os
+import time
+import sqlite3
+import pandas as pd
 from datetime import datetime, timedelta, date, timezone
 from fastapi import APIRouter
-import yfinance as yf
-import pandas as pd
 
-# ── Router ──────────────────────────────────────────────────────────────────
+from shared.yf_cache   import get_series as _yf
+from shared.fred_cache import get_series as _fred, get_series_df as _fred_df
+
+# ── Router ────────────────────────────────────────────────────────────────────
 macro_router = APIRouter(prefix="/macro")
 
-# ── Config ───────────────────────────────────────────────────────────────────
-FRED_API_KEY  = os.getenv("FRED_API_KEY", "")
+# ── Config ────────────────────────────────────────────────────────────────────
 DATA_DIR      = os.getenv("DATA_DIR", "./data")
 MACRO_DB_PATH = os.path.join(DATA_DIR, "macro_history.db")
 
-# FRED series IDs
-# Yields — official Treasury constant maturity rates, published daily by the Fed
+# FRED series IDs for yields and HY OAS — now resolved via shared fred_cache
 FRED_YIELD_SERIES = {
     "yield_1y":  "DGS1",
     "yield_2y":  "DGS2",
@@ -49,23 +37,10 @@ FRED_YIELD_SERIES = {
     "yield_5y":  "DGS5",
     "yield_10y": "DGS10",
 }
-FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"   # ICE BofA US High Yield OAS
-
-# yFinance tickers — yields removed, now from FRED
-YF_TICKERS = {
-    "dxy":       "DX-Y.NYB",
-    "vix":       "^VIX",
-    "nasdaq100": "^IXIC",
-    "vxn":       "^VXN",
-    "sp500":     "^GSPC",
-    "brent":     "BZ=F",
-    "gold":      "GC=F",
-    "silver":    "SI=F",
-    "platinum":  "PL=F",
-    "copper":    "HG=F",
-}
+FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
 
 # ── SQLite helpers ────────────────────────────────────────────────────────────
+# Unchanged from original
 
 def _macro_db():
     """Open macro_history.db, create/migrate schema, return connection."""
@@ -88,7 +63,6 @@ def _macro_db():
             stored_at        TEXT
         )
     """)
-    # Migrate: add any columns that may not exist in older databases
     existing = {row[1] for row in conn.execute("PRAGMA table_info(macro_snapshots)").fetchall()}
     new_cols = [
         ("nasdaq100", "REAL"), ("nasdaq100_sma20", "REAL"), ("nasdaq100_sma50", "REAL"), ("nasdaq100_sma200", "REAL"),
@@ -111,7 +85,6 @@ def _macro_db():
 
 
 def _store_macro_snapshot(snap: dict):
-    """Upsert today's macro snapshot into SQLite."""
     conn = _macro_db()
     today = date.today().isoformat()
     try:
@@ -174,13 +147,11 @@ def _store_macro_snapshot(snap: dict):
 
 
 def _fetch_macro_history_rows(n_days: int = 95) -> list[dict]:
-    """Fetch last N days of history. Only returns columns that exist in DB."""
     conn = _macro_db()
     try:
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(macro_snapshots)")
         available = {row[1] for row in cursor.fetchall()}
-
         base_cols = ["date", "yield_1y", "yield_2y", "yield_3y", "yield_5y", "yield_10y",
                      "dxy", "vix", "hy_oas"]
         extra_cols = ["nasdaq100", "nasdaq100_sma20", "nasdaq100_sma50", "nasdaq100_sma200",
@@ -190,7 +161,6 @@ def _fetch_macro_history_rows(n_days: int = 95) -> list[dict]:
                       "silver", "silver_sma20", "silver_sma50", "silver_sma200",
                       "platinum", "platinum_sma20", "platinum_sma50", "platinum_sma200",
                       "copper", "copper_sma20", "copper_sma50", "copper_sma200"]
-
         select_cols = base_cols + [c for c in extra_cols if c in available]
         rows = conn.execute(
             f"SELECT {', '.join(select_cols)} FROM macro_snapshots ORDER BY date DESC LIMIT ?",
@@ -204,91 +174,54 @@ def _fetch_macro_history_rows(n_days: int = 95) -> list[dict]:
         conn.close()
 
 
-# ── Data fetchers ─────────────────────────────────────────────────────────────
+# ── Data fetchers — REPLACED WITH SHARED CACHE CALLS ─────────────────────────
 
-def _fetch_fred_series(series_id: str, n_days: int = 300) -> list[tuple]:
+def _fetch_all_fred_yields() -> dict:
     """
-    Fetch any FRED series. Returns [(date_str, float), ...] sorted oldest→newest.
-    FRED returns "." for weekends/holidays — those are silently skipped.
-    """
-    if not FRED_API_KEY:
-        print(f"[macro] FRED_API_KEY not set — cannot fetch {series_id}")
-        return []
-    end   = date.today()
-    start = end - timedelta(days=n_days + 30)   # buffer for weekends/holidays
-    url = (
-        f"https://api.stlouisfed.org/fred/series/observations"
-        f"?series_id={series_id}"
-        f"&observation_start={start.isoformat()}"
-        f"&observation_end={end.isoformat()}"
-        f"&api_key={FRED_API_KEY}"
-        f"&file_type=json"
-    )
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        obs = resp.json().get("observations", [])
-        values = []
-        for o in obs:
-            try:
-                values.append((o["date"], float(o["value"])))
-            except (ValueError, KeyError):
-                pass   # "." missing values → skipped
-        return values
-    except Exception as e:
-        print(f"[macro] FRED fetch error ({series_id}): {e}")
-        return []
-
-
-def _fetch_all_fred_yields(n_days: int = 300) -> dict:
-    """
-    Returns {yield_1y: pd.Series, yield_2y: pd.Series, ...} for all yield tenors.
-    Series index is date strings, values are floats (percent).
-    Returns None for a tenor if FRED returns no data.
+    Fetch all yield tenors from shared fred_cache.
+    Returns {yield_1y: pd.Series, ...} — same shape as the original function.
     """
     result = {}
     for key, series_id in FRED_YIELD_SERIES.items():
-        pairs = _fetch_fred_series(series_id, n_days=n_days)
-        if pairs:
-            dates, vals = zip(*pairs)
-            result[key] = pd.Series(list(vals), index=list(dates))
-        else:
-            result[key] = None
+        result[key] = _fred_df(series_id)   # pd.Series or None
     return result
 
 
-def _fetch_fred_hy_oas(n_days: int = 300) -> dict:
-    """Fetch ICE BofA HY OAS (BAMLH0A0HYM2) from FRED."""
-    pairs = _fetch_fred_series(FRED_HY_OAS_SERIES, n_days=n_days)
+def _fetch_fred_hy_oas() -> dict:
+    """
+    Fetch HY OAS from shared fred_cache.
+    Returns {"values": [(date_str, float), ...]} — same shape as original.
+    """
+    pairs = _fred(FRED_HY_OAS_SERIES)
     if pairs:
         return {"values": pairs}
     return {"values": [], "error": "No data or FRED_API_KEY missing"}
 
 
-def _fetch_yfinance_bulk(n_days: int = 300) -> dict:
+def _fetch_yfinance_data() -> dict:
     """
-    Download n_days of daily Close prices for all YF_TICKERS.
-    300d ensures 200d SMA has enough history for commodity futures.
-    Returns {key: pd.Series | None}.
+    Pull all required series from the shared yf_cache.
+    Returns {key: pd.Series | None} — same shape as the original _fetch_yfinance_bulk().
     """
-    tickers = list(YF_TICKERS.values())
-    try:
-        raw   = yf.download(tickers, period=f"{n_days}d", auto_adjust=True,
-                            progress=False, threads=True)
-        close = raw["Close"]
-        result = {}
-        for key, ticker in YF_TICKERS.items():
-            if ticker in close.columns:
-                result[key] = close[ticker].dropna()
-            else:
-                result[key] = None
-        return result
-    except Exception as e:
-        print(f"[macro] yFinance bulk error: {e}")
-        return {k: None for k in YF_TICKERS}
+    keys = ["dxy", "vix", "nasdaq", "vxn", "spx", "brent",
+            "gold", "silver", "platinum", "copper"]
+    # Map shared cache keys → local names expected by formatters
+    return {
+        "dxy":       _yf("dxy"),
+        "vix":       _yf("vix"),
+        "nasdaq100": _yf("nasdaq"),    # ^IXIC in shared cache
+        "vxn":       _yf("vxn"),
+        "sp500":     _yf("spx"),       # ^GSPC in shared cache
+        "brent":     _yf("brent"),
+        "gold":      _yf("gold"),
+        "silver":    _yf("silver"),
+        "platinum":  _yf("platinum"),
+        "copper":    _yf("copper"),
+    }
 
 
 # ── Math helpers ──────────────────────────────────────────────────────────────
+# Unchanged from original
 
 def _calculate_sma(series, window: int) -> float | None:
     if series is None or len(series) < window:
@@ -311,16 +244,16 @@ def _pct_rank(series, current_val) -> int | None:
 
 
 # ── Formatters ────────────────────────────────────────────────────────────────
+# Unchanged from original
 
 def _fmt_yield_card(key: str, series, label: str) -> dict:
-    """Format a single yield tenor. Series is a pd.Series of floats."""
     if series is None or len(series) == 0:
         return {"label": label, "current": None, "error": "No data — check FRED_API_KEY"}
-    vals  = series.tolist()
+    vals    = series.tolist()
     current = vals[-1]
-    d1_chg = round(current - vals[-2], 3) if len(vals) >= 2 else None
-    d5_chg = round(current - vals[-6], 3) if len(vals) >= 6 else None
-    pctile = _pct_rank(vals, current)
+    d1_chg  = round(current - vals[-2], 3) if len(vals) >= 2 else None
+    d5_chg  = round(current - vals[-6], 3) if len(vals) >= 6 else None
+    pctile  = _pct_rank(vals, current)
 
     def _alert(p):
         if p is None: return "–"
@@ -430,7 +363,6 @@ def _fmt_hy_oas(fred_data: dict) -> dict:
 
 
 def _fmt_equity_sma_card(name: str, series) -> dict:
-    """Equity / commodity card with 20/50/200 SMAs."""
     if series is None or len(series) == 0:
         return {"current": None, "error": "No data"}
     vals    = series.tolist()
@@ -464,7 +396,6 @@ def _fmt_equity_sma_card(name: str, series) -> dict:
 
 
 def _fmt_vxn(series) -> dict:
-    """VXN (Nasdaq volatility index) — no SMAs, same style as VIX."""
     if series is None or len(series) == 0:
         return {"current": None, "error": "No data"}
     vals    = series.tolist()
@@ -502,13 +433,14 @@ def _spread_label(y2, y10) -> str:
     return f"Steep ({bp:+d}bp)"
 
 
-# ── Cache (refreshes once after 10AM EST each day) ───────────────────────────
+# ── Cache ─────────────────────────────────────────────────────────────────────
+# Unchanged from original — macro refreshes once after 10AM EST
 
-EST = timezone(timedelta(hours=-5))   # fixed offset; -4 during EDT — adjust if needed
+EST = timezone(timedelta(hours=-5))
 
 def _last_10am_est() -> datetime:
-    now_est      = datetime.now(EST)
-    today_10am   = now_est.replace(hour=10, minute=0, second=0, microsecond=0)
+    now_est    = datetime.now(EST)
+    today_10am = now_est.replace(hour=10, minute=0, second=0, microsecond=0)
     if now_est < today_10am:
         return today_10am - timedelta(days=1)
     return today_10am
@@ -530,14 +462,12 @@ def _build_macro_metrics() -> dict:
     if not _cache_is_stale(_macro_cache):
         return _macro_cache["data"]
 
-    # ── Fetch all sources in parallel-ish order ──
-    # Yields + HY OAS from FRED (reliable, authoritative, no blank weekends)
-    fred_yields  = _fetch_all_fred_yields(n_days=300)
-    fred_hy_data = _fetch_fred_hy_oas(n_days=300)
-    # Everything else from yFinance
-    yf_data      = _fetch_yfinance_bulk(n_days=300)
+    # ── Pull from shared caches — no network calls here ──────────────────
+    fred_yields  = _fetch_all_fred_yields()
+    fred_hy_data = _fetch_fred_hy_oas()
+    yf_data      = _fetch_yfinance_data()
 
-    # ── Build yield cards ──
+    # ── Build yield cards ─────────────────────────────────────────────────
     yields = {
         "1y":  _fmt_yield_card("yield_1y",  fred_yields.get("yield_1y"),  "1Y"),
         "2y":  _fmt_yield_card("yield_2y",  fred_yields.get("yield_2y"),  "2Y"),
@@ -568,7 +498,7 @@ def _build_macro_metrics() -> dict:
         "copper":    _fmt_equity_sma_card("Copper",      yf_data.get("copper")),
     }
 
-    # ── Persist daily snapshot to SQLite ──
+    # ── Persist daily snapshot to SQLite ─────────────────────────────────
     _store_macro_snapshot({
         "yield_1y":  yields["1y"].get("current"),
         "yield_2y":  yields["2y"].get("current"),
@@ -615,42 +545,21 @@ def _build_macro_metrics() -> dict:
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+# Unchanged from original
 
 @macro_router.get("/metrics")
 def get_macro_metrics():
-    """
-    Full macro snapshot. Returns:
-      updated_at, yields {1y–10y}, curve {spread_2y10y_bp, label},
-      dxy, vix, hy_oas, nasdaq100, vxn, sp500, brent,
-      gold, silver, platinum, copper
-    Cached; refreshes once after 10AM EST each day.
-    """
     return _build_macro_metrics()
 
 
 @macro_router.get("/history")
 def get_macro_history(days: int = 90):
-    """Last N days of stored macro snapshots from SQLite."""
     rows = _fetch_macro_history_rows(n_days=days)
     return {"rows": rows, "count": len(rows)}
 
 
 @macro_router.get("/cache/flush")
 def flush_macro_cache():
-    """Force cache refresh on next request."""
     global _macro_cache
     _macro_cache = {"data": None, "ts": 0.0}
     return {"flushed": True}
-
-
-# ── Registration reminder ─────────────────────────────────────────────────────
-#
-#   Add to bottom of main.py:
-#
-#     from macro_routes import macro_router
-#     app.include_router(macro_router)
-#
-#   Endpoints:
-#     GET /macro/metrics
-#     GET /macro/history?days=90
-#     GET /macro/cache/flush
