@@ -26,6 +26,8 @@ from equity_routes import sector_flows_router     # keeps /sector-flows/metrics 
 from commodity_routes import commodity_router
 from etf_aum_routes import etf_aum_router
 from leading_routes import leading_router
+from shared.yf_cache  import warm_cache as _warm_yf
+from shared.fred_cache import flush as _flush_fred, status as _fred_status
 
 
 
@@ -70,6 +72,11 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # lifespan goes here, before app = FastAPI()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── Warm the shared yFinance cache in background on boot ──────────────
+    # All route files share this one download — first real request is instant.
+    threading.Thread(target=_warm_yf, daemon=True).start()
+ 
+    # ── Existing startup seeds (unchanged) ───────────────────────────────
     try:
         from macro_routes import _build_macro_metrics
         _build_macro_metrics()
@@ -77,12 +84,13 @@ async def lifespan(app: FastAPI):
         pass
     try:
         from leading_routes import _build_funding_cumulative, _build_tether_mints
-        _build_funding_cumulative()   # seeds day-1 funding snapshot
-        _build_tether_mints()         # seeds day-1 tether snapshot
+        _build_funding_cumulative()
+        _build_tether_mints()
     except Exception:
         pass
+ 
     yield
-
+    # (nothing to clean up on shutdown)
 # then app uses it
 app = FastAPI(title="BTC Decision Dashboard API")
 app = FastAPI(lifespan=lifespan)
@@ -1883,8 +1891,53 @@ def debug_funding():
         "sample": [{"market": m.get("market"), "symbol": m.get("symbol"), "funding_rate": m.get("funding_rate"), "oi": m.get("open_interest")} for m in btc_perps[:10]]
     }
 
+
 @app.get("/cache/flush")
 def flush_metrics_cache():
+    """Flush the metrics cache AND the shared yFinance + FRED caches."""
     global _metrics_cache
     _metrics_cache = {"data": None, "ts": 0.0}
-    return {"flushed": True, "cache": "metrics"}
+ 
+    # Flush shared data caches too
+    from shared.yf_cache import flush as _flush_yf
+    _flush_yf()
+    _flush_fred()   # flushes all FRED series
+ 
+    return {"flushed": True, "caches": ["metrics", "yfinance", "fred"]}
+ 
+ 
+@app.get("/cache/status")
+def get_cache_status():
+    """
+    Debug endpoint — shows age and staleness of all shared caches.
+    Useful for Railway log inspection or a health dashboard.
+ 
+    Returns:
+    {
+      "metrics": { "age_s": 42, "stale": false },
+      "yfinance": { "age_s": 180, "updated_at": "2026-06-27T...", "stale": false },
+      "fred": {
+        "BAMLH0A0HYM2": { "age_s": 320, "n_obs": 250, "ttl": 3600, "stale": false },
+        ...
+      }
+    }
+    """
+    import time
+    from shared.yf_cache  import cache_age_seconds, cache_updated_at
+    from shared.fred_cache import status as fred_status
+ 
+    metrics_age   = time.time() - _metrics_cache["ts"] if _metrics_cache["ts"] else None
+    yf_age        = cache_age_seconds()
+ 
+    return {
+        "metrics": {
+            "age_s": round(metrics_age) if metrics_age else None,
+            "stale": _cache_is_stale(_metrics_cache),
+        },
+        "yfinance": {
+            "age_s":      round(yf_age),
+            "updated_at": cache_updated_at(),
+            "stale":      yf_age > 300,   # 5 min TTL
+        },
+        "fred": fred_status(),
+    }
