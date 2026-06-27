@@ -1042,20 +1042,19 @@ LARGE_MINT_THRESHOLD_USD = 500_000_000   # $500M in one day
 
 def fetch_tether_mints() -> dict | None:
     """
-    Reads USDT supply from the existing stablecoin_history.db (already populated
-    by main.py's store_stablecoin_snapshot) — zero extra CoinGecko calls.
+    Reads USDT supply from stablecoin_history.db (already populated by main.py)
+    — zero extra CoinGecko calls.
     """
     try:
-        from main import STABLECOIN_DB_PATH
         import sqlite3
-        with sqlite3.connect(str(STABLECOIN_DB_PATH)) as conn:
+        db_path = DATA_DIR / "stablecoin_history.db"
+        with sqlite3.connect(str(db_path)) as conn:
             rows = conn.execute(
                 "SELECT date, usdt_supply FROM stablecoin_supply ORDER BY date DESC LIMIT 30"
             ).fetchall()
         if not rows:
             return None
         usdt_now = rows[0][1]
-
     # Look up yesterday's stored value
     hist = _query_history("tether_mint_history", ["date", "usdt_supply", "daily_change"], 30)
     yesterday_supply = hist[0]["usdt_supply"] if hist else None
