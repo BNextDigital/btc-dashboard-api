@@ -52,81 +52,149 @@ import yfinance as yf
 #
 ALL_TICKERS: dict[str, str] = {
 
-    # ── US Equity Indices ──────────────────────────────────────────────────
-    "spx":          "^GSPC",        # S&P 500
-    "nasdaq":       "^IXIC",        # Nasdaq Composite
-    "qqq":          "QQQ",          # Nasdaq 100 ETF
-    "iwm":          "^RUT",         # Russell 2000
+    # ── US Equity Indices ─────────────────────────────────────────────────
+    "spx":      "^GSPC",        # S&P 500
+    "nasdaq":   "^IXIC",        # Nasdaq Composite
+    "qqq":      "QQQ",          # Nasdaq 100 ETF
+    "iwm":      "^RUT",         # Russell 2000
+    "dji":      "^DJI",         # Dow Jones Industrial Average
 
-    # ── Equity ETFs & Breadth ──────────────────────────────────────────────
-    "spy":          "SPY",          # S&P 500 cap-weighted (breadth denominator)
-    "rsp":          "RSP",          # S&P 500 equal-weighted (breadth numerator)
-    "tlt":          "TLT",          # 20Y Treasury bond ETF
+    # ── Broad Market ETFs ─────────────────────────────────────────────────
+    "spy":      "SPY",          # S&P 500 cap-weighted (breadth denominator)
+    "rsp":      "RSP",          # S&P 500 equal-weighted (breadth numerator)
+    "tlt":      "TLT",          # 20Y Treasury bond ETF
+    "ief":      "IEF",          # 7-10Y Treasury bond ETF
 
-    # ── Sector ETFs ───────────────────────────────────────────────────────
-    "soxx":         "SOXX",         # Semiconductors
-    "xlf":          "XLF",          # Financials / Banks
-    "xlk":          "XLK",          # Technology
-    "xle":          "XLE",          # Energy
-    "xlu":          "XLU",          # Utilities
-    "xlre":         "XLRE",         # Real Estate
-    "iyt":          "IYT",          # Transports
+    # ── Technology — ETFs ─────────────────────────────────────────────────
+    "xlk":      "XLK",          # Broad Technology (S&P sector ETF)
+    "soxx":     "SOXX",         # Semiconductors (iShares)
+    "smh":      "SMH",          # Semiconductors (VanEck — higher volume)
+    "igv":      "IGV",          # Software
+    "skyy":     "SKYY",         # Cloud
+    "xlc":      "XLC",          # Communication Services
 
-    # ── Credit ETFs (sector flows v2) ─────────────────────────────────────
-    "hyg":          "HYG",          # High-yield bond ETF
-    "lqd":          "LQD",          # Investment-grade bond ETF
+    # ── Technology — Individual Names ─────────────────────────────────────
+    "nvda":     "NVDA",         # Nvidia — AI cycle barometer
+    "amd":      "AMD",          # AMD — semi demand signal
+    "arm":      "ARM",          # ARM Holdings — chip architecture
+    "smci":     "SMCI",         # Super Micro — AI infrastructure
+    "aapl":     "AAPL",         # Apple — consumer + China demand
+    "meta":     "META",         # Meta — ad spend / risk appetite
+    "googl":    "GOOGL",        # Alphabet — cloud + ad spend
+    "tsla":     "TSLA",         # Tesla — risk appetite proxy
+    "msft":     "MSFT",         # Microsoft — cloud + AI infrastructure
+
+    # ── Financials — ETFs ─────────────────────────────────────────────────
+    "xlf":      "XLF",          # Broad Financials (S&P sector ETF)
+    "kbe":      "KBE",          # Large cap banks ETF
+    "kre":      "KRE",          # Regional banks ETF — stress canary
+    "iai":      "IAI",          # Investment banks / capital markets
+    "kie":      "KIE",          # Insurance
+    "ipay":     "IPAY",         # Fintech / payments
+
+    # ── Financials — Large Banks ───────────────────────────────────────────
+    "jpm":      "JPM",          # JPMorgan — largest US bank
+    "bac":      "BAC",          # Bank of America — consumer banking
+    "wfc":      "WFC",          # Wells Fargo — retail banking
+    "c":        "C",            # Citigroup — global wholesale
+    "gs":       "GS",           # Goldman Sachs — capital markets
+    "ms":       "MS",           # Morgan Stanley — wealth + IB
+
+    # ── Financials — Regional Banks ────────────────────────────────────────
+    "wal":      "WAL",          # Western Alliance — stress canary
+    "zion":     "ZION",         # Zions Bancorporation — CRE exposure proxy
+
+    # ── Financials — Payments & Credit ────────────────────────────────────
+    "v":        "V",            # Visa — payment velocity
+    "ma":       "MA",           # Mastercard — payment velocity
+    "cof":      "COF",          # Capital One — consumer credit / delinquency
+    "axp":      "AXP",          # American Express — consumer credit
+
+    # ── Healthcare — ETFs ─────────────────────────────────────────────────
+    "xlv":      "XLV",          # Broad Healthcare (S&P sector ETF)
+    "xbi":      "XBI",          # Biotech (equal-weighted)
+
+    # ── Industrials — ETFs ────────────────────────────────────────────────
+    "xli":      "XLI",          # Broad Industrials (S&P sector ETF)
+    "iyt":      "IYT",          # Transports
+
+    # ── Energy — ETFs ─────────────────────────────────────────────────────
+    "xle":      "XLE",          # Broad Energy (S&P sector ETF)
+    "oih":      "OIH",          # Oil services
+
+    # ── Materials — ETFs ──────────────────────────────────────────────────
+    "xlb":      "XLB",          # Broad Materials (S&P sector ETF)
+
+    # ── Consumer — ETFs ───────────────────────────────────────────────────
+    "xly":      "XLY",          # Consumer Discretionary (S&P sector ETF)
+    "xlp":      "XLP",          # Consumer Staples (S&P sector ETF)
+    "xrt":      "XRT",          # Consumer Retail (equal-weighted)
+    "glux":     "GLUX",         # Luxury goods
+
+    # ── Real Estate — ETFs ────────────────────────────────────────────────
+    "xlre":     "XLRE",         # Real Estate (S&P sector ETF)
+    "vnq":      "VNQ",          # Broader REIT ETF
+
+    # ── Utilities — ETFs ──────────────────────────────────────────────────
+    "xlu":      "XLU",          # Utilities (S&P sector ETF)
+
+    # ── Credit ETFs ───────────────────────────────────────────────────────
+    "hyg":      "HYG",          # High-yield bond ETF
+    "lqd":      "LQD",          # Investment-grade bond ETF
 
     # ── Volatility ────────────────────────────────────────────────────────
-    "vix":          "^VIX",         # CBOE VIX (equity vol)
-    "vxn":          "^VXN",         # CBOE VXN (Nasdaq vol)
-    #"evz":          "EVZ",         # CBOE Euro FX Vol
+    "vix":      "^VIX",         # CBOE VIX (equity vol)
+    "vxn":      "^VXN",         # CBOE VXN (Nasdaq vol)
 
-    # ── US Treasury Yields (yFinance) ─────────────────────────────────────
-    "yield_1y":     "^IRX",         # 13-week proxy for 1Y
-    "yield_5y":     "^FVX",         # 5Y
-    "yield_10y":    "^TNX",         # 10Y
+    # ── US Treasury Yields ────────────────────────────────────────────────
+    "yield_1y": "^IRX",         # 13-week proxy for 1Y
+    "yield_5y": "^FVX",         # 5Y
+    "yield_10y":"^TNX",         # 10Y
 
     # ── FX — Major Pairs ──────────────────────────────────────────────────
-    "dxy":          "DX-Y.NYB",     # US Dollar Index
-    "eurusd":       "EURUSD=X",     # EUR/USD
-    "usdjpy":       "JPY=X",        # USD/JPY
-    "usdcnh":       "CNY=X",        # USD/CNH
+    "dxy":      "DX-Y.NYB",     # US Dollar Index
+    "eurusd":   "EURUSD=X",     # EUR/USD
+    "usdjpy":   "JPY=X",        # USD/JPY
+    "usdcnh":   "CNY=X",        # USD/CNH (offshore yuan)
 
     # ── FX — Emerging Markets ─────────────────────────────────────────────
-    "usdbrl":       "BRL=X",        # USD/BRL — Brazil
-    "usdmxn":       "MXN=X",        # USD/MXN — Mexico
-    "usdinr":       "INR=X",        # USD/INR — India
-    "usdkrw":       "KRW=X",        # USD/KRW — South Korea
-    "usdzar":       "ZAR=X",        # USD/ZAR — South Africa
+    "usdbrl":   "BRL=X",        # USD/BRL — Brazil
+    "usdmxn":   "MXN=X",        # USD/MXN — Mexico
+    "usdinr":   "INR=X",        # USD/INR — India
+    "usdkrw":   "KRW=X",        # USD/KRW — South Korea
+    "usdzar":   "ZAR=X",        # USD/ZAR — South Africa
+
+    # ── Korea / Asia ──────────────────────────────────────────────────────
+    "ewy":      "EWY",          # iShares MSCI South Korea ETF
 
     # ── Energy Futures ────────────────────────────────────────────────────
-    "wti":          "CL=F",         # WTI Crude Oil
-    "brent":        "BZ=F",         # Brent Crude Oil
-    "natgas":       "NG=F",         # Natural Gas
-    "gasoline":     "RB=F",         # RBOB Gasoline
+    "wti":      "CL=F",         # WTI Crude Oil
+    "brent":    "BZ=F",         # Brent Crude Oil
+    "natgas":   "NG=F",         # Natural Gas
+    "gasoline": "RB=F",         # RBOB Gasoline
 
     # ── Metals Futures ────────────────────────────────────────────────────
-    "gold":         "GC=F",         # Gold
-    "silver":       "SI=F",         # Silver
-    "copper":       "HG=F",         # Copper
-    "platinum":     "PL=F",         # Platinum
+    "gold":     "GC=F",         # Gold
+    "silver":   "SI=F",         # Silver
+    "copper":   "HG=F",         # Copper
+    "platinum": "PL=F",         # Platinum
 
-    # ── Grain Futures ────────────────────────────────────────────────────
-    "wheat":        "ZW=F",         # Wheat
-    "corn":         "ZC=F",         # Corn
-    "soybeans":     "ZS=F",         # Soybeans
+    # ── Grain Futures ─────────────────────────────────────────────────────
+    "wheat":    "ZW=F",         # Wheat
+    "corn":     "ZC=F",         # Corn
+    "soybeans": "ZS=F",         # Soybeans
 
-    # ── Crypto ───────────────────────────────────────────────────────────
-    "btc_usd":      "BTC-USD",      # Bitcoin spot (sector flows)
+    # ── Crypto ────────────────────────────────────────────────────────────
+    "btc_usd":  "BTC-USD",      # Bitcoin spot
 
     # ── Crypto Proxy Stocks ───────────────────────────────────────────────
-    "mstr":         "MSTR",         # MicroStrategy
-    "coin":         "COIN",         # Coinbase
-    "hood":         "HOOD",         # Robinhood
-    "mara":         "MARA",         # Marathon Digital
-    "pypl":         "PYPL",         # PayPal
+    "mstr":     "MSTR",         # MicroStrategy
+    "coin":     "COIN",         # Coinbase
+    "hood":     "HOOD",         # Robinhood
+    "mara":     "MARA",         # Marathon Digital
+    "pypl":     "PYPL",         # PayPal
+    "sq":       "SQ",           # Block (Square)
 }
-
 # ── Lookback ──────────────────────────────────────────────────────────────────
 #
 # 300 trading days (~14 months) covers:
