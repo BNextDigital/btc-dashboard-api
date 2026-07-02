@@ -90,7 +90,7 @@ ALL_TICKERS: dict[str, str] = {
     "dxy":          "DX-Y.NYB",     # US Dollar Index
     "eurusd":       "EURUSD=X",     # EUR/USD
     "usdjpy":       "JPY=X",        # USD/JPY
-    "usdcnh":       "CNH=X",        # USD/CNH
+    "usdcnh":       "USDCNH=X",        # USD/CNH
 
     # ── FX — Emerging Markets ─────────────────────────────────────────────
     "usdbrl":       "BRL=X",        # USD/BRL — Brazil
