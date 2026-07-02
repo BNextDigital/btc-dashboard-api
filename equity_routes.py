@@ -18,7 +18,7 @@ from fastapi import APIRouter
 from shared.yf_cache import get_series as _yf
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-sector_flows_router = APIRouter()   # no prefix — mount both paths below
+equity_router = APIRouter()   # no prefix — mount both paths below
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CACHE_TTL    = 600   # 10 minutes
@@ -383,17 +383,12 @@ def _build_equity_metrics() -> dict:
 # ── Routes ────────────────────────────────────────────────────────────────────
 # Unchanged from original
 
-@sector_flows_router.get("/sector-flows/metrics")
-def get_sector_flows_metrics():
-    return _build_equity_metrics()
-
-
-@sector_flows_router.get("/equity/metrics")
+@equity_router.get("/equity/metrics")
 def get_equity_metrics():
     return _build_equity_metrics()
 
 
-@sector_flows_router.get("/equity/cache/flush")
+@equity_router.get("/equity/cache/flush")
 def flush_equity_cache():
     global _cache
     _cache = {"data": None, "ts": 0.0}
