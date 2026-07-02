@@ -107,6 +107,16 @@ def _build_dxy_card(series) -> dict:
     else:
         alert_level, alert = "none",    "DXY neutral — no strong directional wind"
 
+    # Percentile override: absolute level thresholds assume a wide DXY range.
+    # When DXY is compressed but at a multi-month extreme within that range,
+    # the level check misses it. Percentile catches what absolute value doesn't.
+    if alert_level == "none" and pctile >= 85:
+        alert_level = "notable"
+        alert       = f"DXY at {pctile}th percentile — elevated within recent range despite moderate absolute level"
+    elif alert_level == "none" and pctile <= 15:
+        alert_level = "notable"
+        alert       = f"DXY at {pctile}th percentile — weak within recent range, USD pressure easing"
+
     if chg20_pct >= 2:
         pattern = f"Rising +{chg20_pct:.1f}% (20d) — dollar gaining, tightening global conditions"
     elif chg20_pct <= -2:
@@ -368,17 +378,28 @@ def _build_fxvol_card(evz_series, broad_usd_obs: list) -> dict:
 
 
 def _build_carry_card(usdjpy_card: dict, usdcnh_card: dict, dxy_card: dict) -> dict:
-    carry_signal = usdjpy_card.get("carry_signal", "—")
-    carry_level  = usdjpy_card.get("carry_level",  "none")
-    dxy_pct      = dxy_card.get("percentile", 50)
+    carry_signal  = usdjpy_card.get("carry_signal", "—")
+    carry_level   = usdjpy_card.get("carry_level",  "none")
+    dxy_pct       = dxy_card.get("percentile", 50) or 50
+    usdjpy_pctile = usdjpy_card.get("percentile",   50) or 50
+
+    # Level override: structural JPY weakness trumps flat 5d momentum.
+    # A 90th+ percentile reading means carry is extremely extended even
+    # if no unwind has started — the risk is elevated, not the move.
+    if carry_level == "none" and usdjpy_pctile >= 90:
+        carry_level  = "notable"
+        carry_signal = f"Carry structurally extended — USD/JPY at {usdjpy_pctile}th percentile, unwind risk elevated without momentum trigger"
 
     if carry_level == "extreme":
         summary    = "CARRY UNWIND — JPY surging. Forced asset sales likely across risk assets including BTC."
         btc_impact = "bearish"
-    elif carry_level == "notable" and (dxy_pct or 50) >= 70:
-        summary    = "Carry under pressure — JPY strengthening + strong USD. Watch for risk-off cascade."
+    elif carry_level == "notable" and dxy_pct >= 70:
+        summary    = "Carry under pressure — JPY at structural extreme + strong USD. Unwind risk elevated; watch for risk-off cascade."
         btc_impact = "bearish"
-    elif carry_level == "none" and (dxy_pct or 50) <= 40:
+    elif carry_level == "notable":
+        summary    = "Carry structurally extended — JPY at extreme weakness. No momentum trigger yet, but positioning is crowded."
+        btc_impact = "neutral"
+    elif carry_level == "none" and dxy_pct <= 40:
         summary    = "Carry conditions supportive — JPY weak, USD not surging. Low-rate funding accessible."
         btc_impact = "neutral"
     else:
@@ -394,7 +415,6 @@ def _build_carry_card(usdjpy_card: dict, usdcnh_card: dict, dxy_card: dict) -> d
         "btc_impact":  btc_impact,
         "note":        "JPY carry: borrow cheap yen, invest elsewhere. Rapid JPY strengthening forces unwind → sell-off across risk assets.",
     }
-
 
 def _build_wind_assessment(
     dxy: dict, eurusd: dict, usdjpy: dict, usdcnh: dict, em: dict
