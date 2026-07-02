@@ -79,7 +79,7 @@ ALL_TICKERS: dict[str, str] = {
     # ── Volatility ────────────────────────────────────────────────────────
     "vix":          "^VIX",         # CBOE VIX (equity vol)
     "vxn":          "^VXN",         # CBOE VXN (Nasdaq vol)
-    "evz":          "EVZ",         # CBOE Euro FX Vol
+    #"evz":          "EVZ",         # CBOE Euro FX Vol
 
     # ── US Treasury Yields (yFinance) ─────────────────────────────────────
     "yield_1y":     "^IRX",         # 13-week proxy for 1Y
@@ -90,7 +90,7 @@ ALL_TICKERS: dict[str, str] = {
     "dxy":          "DX-Y.NYB",     # US Dollar Index
     "eurusd":       "EURUSD=X",     # EUR/USD
     "usdjpy":       "JPY=X",        # USD/JPY
-    "usdcnh":       "USDCNH=X",        # USD/CNH
+    "usdcnh":       "CNY=X",        # USD/CNH
 
     # ── FX — Emerging Markets ─────────────────────────────────────────────
     "usdbrl":       "BRL=X",        # USD/BRL — Brazil
