@@ -326,41 +326,58 @@ def _build_em_basket() -> dict:
     }
 
 
-def _build_fxvol_card(evz_series, broad_usd_obs: list) -> dict:
+def _build_fxvol_card(eurusd_series, broad_usd_obs: list) -> dict:
+    """
+    FX Volatility card.
+    Primary: EUR/USD 20d realized vol (annualized) — derived from existing series,
+             replaces ^EVZ (CBOE implied vol) which is unavailable on yFinance.
+    Context: FRED DTWEXBGS broad trade-weighted dollar (trend context)
+    """
     card: dict = {
         "name":       "FX Volatility",
         "city_label": CITY_LABELS["fxvol"],
     }
 
-    if evz_series is not None and len(evz_series) >= 5:
-        vals    = evz_series.tolist()
-        current = round(vals[-1], 2)
-        d5      = vals[-6]  if len(vals) >= 6  else vals[0]
-        d20     = vals[-21] if len(vals) >= 21 else vals[0]
-        pctile  = _pct_rank(vals, current)
+    if eurusd_series is not None and len(eurusd_series) >= 22:
+        import pandas as pd
 
-        if current >= 12:
-            alert_level, alert = "extreme", "EUR/USD vol elevated — turbulent FX conditions"
-        elif current >= 9:
+        returns     = eurusd_series.pct_change().dropna()
+        rv_20d      = round(float(returns.rolling(20).std().iloc[-1]) * (252 ** 0.5) * 100, 2)
+        rv_5d       = round(float(returns.rolling(5).std().iloc[-1])  * (252 ** 0.5) * 100, 2)
+
+        # Build a realized vol series for percentile rank + spark
+        rv_series   = (returns.rolling(20).std() * (252 ** 0.5) * 100).dropna()
+        rv_vals     = rv_series.tolist()
+        pctile      = _pct_rank(rv_vals, rv_20d)
+
+        d5_chg      = round(rv_20d - rv_5d, 2)   # directional change proxy
+
+        if rv_20d >= 10:
+            alert_level, alert = "extreme", "FX vol elevated — turbulent EUR/USD conditions"
+        elif rv_20d >= 7:
             alert_level, alert = "notable", "FX vol rising — increasing currency uncertainty"
-        elif current <= 5:
+        elif rv_20d <= 4:
             alert_level, alert = "none",    "FX vol compressed — calm conditions"
         else:
             alert_level, alert = "none",    "FX vol normal"
 
         card.update({
-            "evz":         f"{current:.2f}",
-            "evz_raw":     current,
-            "evz_d5":      _delta_str(current, d5, 2),
-            "evz_d20":     _delta_str(current, d20, 2),
+            "evz":         f"{rv_20d:.2f}%",   # reuse evz key — frontend already reads it
+            "evz_raw":     rv_20d,
+            "evz_d5":      f"{d5_chg:+.2f}%",
             "percentile":  pctile,
             "alert":       alert,
             "alert_level": alert_level,
-            "spark":       _spark(vals, 20),
+            "spark":       _spark(rv_vals, 20),
+            "vol_method":  "EUR/USD 20d realized vol (annualized)",
         })
     else:
-        card.update({"evz": "—", "alert": "FX vol data unavailable",
-                     "alert_level": "none", "percentile": None})
+        card.update({
+            "evz":         "—",
+            "alert":       "FX vol unavailable",
+            "alert_level": "none",
+            "percentile":  None,
+        })
 
     if broad_usd_obs:
         broad_vals    = [v for _, v in broad_usd_obs]
@@ -375,7 +392,6 @@ def _build_fxvol_card(evz_series, broad_usd_obs: list) -> dict:
 
     card["note"] = "Rising FX vol = turbulent conditions. Sustained high vol often precedes deleveraging across risk assets."
     return card
-
 
 def _build_carry_card(usdjpy_card: dict, usdcnh_card: dict, dxy_card: dict) -> dict:
     carry_signal  = usdjpy_card.get("carry_signal", "—")
