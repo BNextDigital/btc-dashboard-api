@@ -143,7 +143,7 @@ ALL_SERIES: dict[str, Frequency] = {
     "RSAFS":            "monthly",  # Retail sales
     "UMCSENT":          "monthly",  # U Michigan consumer sentiment
     "MICH":             "monthly",  # U Michigan inflation expectations (1Y)
-    "NAPM":             "monthly",  # ISM Manufacturing PMI
+    "ISPMAN":             "monthly",  # ISM Manufacturing PMI
 
     # ── GDP (quarterly) ───────────────────────────────────────────────────
     "A191RL1Q225SBEA":  "quarterly", # Real GDP growth rate (annualised)
