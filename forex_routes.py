@@ -505,10 +505,7 @@ def _build_forex_metrics() -> dict:
     usdjpy = _build_usdjpy_card(_yf("usdjpy"))
     usdcnh = _build_usdcnh_card(_yf("usdcnh"))
     em     = _build_em_basket()                        # fetches EM pairs internally
-    fxvol  = _build_fxvol_card(
-                 _yf("evz"),
-                 _fred(FRED_BROAD_USD),                # [(date, float), ...] from shared cache
-             )
+    fxvol = _build_fxvol_card(_yf("eurusd"), _fred(FRED_BROAD_USD))
     carry  = _build_carry_card(usdjpy, usdcnh, dxy)
     wind   = _build_wind_assessment(dxy, eurusd, usdjpy, usdcnh, em)
 
