@@ -28,6 +28,7 @@ from etf_aum_routes import etf_aum_router
 from leading_routes import leading_router
 from shared.yf_cache  import warm_cache as _warm_yf
 from shared.fred_cache import flush as _flush_fred, status as _fred_status
+from sol_routes import sol_router
 
 
 
@@ -115,6 +116,7 @@ app.include_router(growth_router)
 app.include_router(commodity_router) 
 app.include_router(etf_aum_router)# new
 app.include_router(leading_router)
+app.include_router(sol_router)
 
 
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
