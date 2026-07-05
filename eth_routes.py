@@ -32,6 +32,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 import requests
 
+from shared.cg_cache import cg_request as _cg_shared, get_weighted_funding_oi as _cg_derivs
+
 try:
     import yfinance as yf
     HAS_YF = True
@@ -101,16 +103,8 @@ _init_dbs()
 # ── CoinGecko helpers ──────────────────────────────────────────────────────────
 
 def _cg(path: str, params: dict = None) -> dict:
-    headers = {}
-    key = os.getenv("COINGECKO_API_KEY", "")
-    if key:
-        headers["x-cg-pro-api-key"] = key
-    r = requests.get(f"{CG_BASE}{path}", params=params or {}, headers=headers, timeout=15)
-    if not r.ok:
-        # 429 = rate limit hit — free tier is 30 req/min shared with main.py + sol_routes
-        print(f"[eth] CoinGecko HTTP {r.status_code} for {path} — {r.text[:120]}")
-        r.raise_for_status()
-    return r.json()
+    """Delegates to shared CoinGecko helper — keeps local call sites unchanged."""
+    return _cg_shared(path, params)
 
 
 def fetch_eth_market() -> dict:
@@ -134,20 +128,8 @@ def fetch_eth_market() -> dict:
 
 
 def fetch_eth_derivatives() -> dict:
-    """ETH perp funding rate + OI from CoinGecko derivatives."""
-    try:
-        tickers = _cg("/derivatives", params={"include_tickers": "unexpired"})
-        eth     = [t for t in tickers if t.get("base", "").upper() == "ETH"]
-        if not eth:
-            return {"funding": None, "open_interest_usd": None}
-        total_oi  = sum(float(t.get("open_interest_usd") or 0) for t in eth)
-        w_funding = (
-            sum(float(t.get("funding_rate") or 0) * float(t.get("open_interest_usd") or 0) for t in eth)
-            / total_oi if total_oi else 0
-        )
-        return {"funding": w_funding, "open_interest_usd": total_oi}
-    except Exception:
-        return {"funding": None, "open_interest_usd": None}
+    """ETH perp funding + OI — shared /derivatives cache (one call for BTC+ETH+SOL)."""
+    return _cg_derivs("ETH")
 
 
 def fetch_eth_ohlcv(days: int = 30) -> list[dict]:
