@@ -1,0 +1,208 @@
+"""
+shared/cg_cache.py — Shared CoinGecko cache layer
+===================================================
+Centralises CoinGecko endpoints called by more than one route file.
+
+PROBLEM SOLVED:
+  /derivatives returns ~3,000 tickers for all coins.
+  main.py, eth_routes.py, and sol_routes.py each fetched it independently —
+  three identical network calls on every cache miss, hitting the free-tier
+  30 req/min limit and tripling bandwidth on every refresh cycle.
+
+ENDPOINTS CONSOLIDATED HERE:
+  /derivatives  — fetched once, all three route files filter from the same list
+  /global       — global market data (stablecoin supply, BTC dominance)
+
+ENDPOINTS THAT STAY IN EACH ROUTE FILE (coin-specific, can't share):
+  /coins/{id}       — market data differs per coin
+  /coins/{id}/ohlc  — OHLCV history differs per coin
+
+USAGE:
+  # Replace the private _cg() in each route file with the shared helper:
+  from shared.cg_cache import cg_request as _cg
+
+  # Replace each file's own /derivatives fetch with one shared call:
+  from shared.cg_cache import get_weighted_funding_oi
+
+  # In eth_routes.py / sol_routes.py:
+  def fetch_eth_derivatives() -> dict:
+      return get_weighted_funding_oi("ETH")   # ← was its own /derivatives call
+
+  # In data_sources.py (BTC):
+  def _fetch_coingecko_derivatives() -> list:
+      return get_derivatives()                 # ← was its own /derivatives call
+
+SETUP:
+  Place this file at:  btc-dashboard-api/shared/cg_cache.py
+  Create (if missing): btc-dashboard-api/shared/__init__.py
+"""
+
+from __future__ import annotations
+import os, time, threading
+import requests
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+
+CG_BASE = "https://api.coingecko.com/api/v3"
+TTL     = 300    # 5 min — consistent with route-file cache TTLs
+
+_lock   = threading.Lock()   # FastAPI is threaded; lock prevents duplicate fetches on cache miss
+
+# ── Per-endpoint caches ────────────────────────────────────────────────────────
+
+_derivatives_cache: dict = {"data": None, "ts": 0.0}
+_global_cache:      dict = {"data": None, "ts": 0.0}
+
+
+# ── Shared HTTP helper ────────────────────────────────────────────────────────
+#
+# Replaces the private _cg() / _cg_get() defined identically in:
+#   main.py / data_sources.py, eth_routes.py, sol_routes.py
+#
+# Import and alias:
+#   from shared.cg_cache import cg_request as _cg
+
+def cg_request(path: str, params: dict = None) -> dict | list:
+    """
+    Single CoinGecko request helper — auth, logging, raise on error.
+    All route files should import this instead of defining their own.
+    """
+    headers = {}
+    key = os.getenv("COINGECKO_API_KEY", "")
+    if key:
+        headers["x-cg-pro-api-key"] = key
+    r = requests.get(f"{CG_BASE}{path}", params=params or {}, headers=headers, timeout=15)
+    if not r.ok:
+        # 429 = rate limit. Callers handle stale-cache fallback.
+        print(f"[cg_cache] HTTP {r.status_code} for {path} — {r.text[:120]}")
+        r.raise_for_status()
+    return r.json()
+
+
+# ── /derivatives — shared across BTC, ETH, SOL ───────────────────────────────
+
+def get_derivatives() -> list[dict]:
+    """
+    All unexpired derivative tickers from CoinGecko, cached for TTL seconds.
+
+    Returns the raw list — callers filter for their coin:
+        btc = [d for d in get_derivatives() if d.get("base","").upper() == "BTC"]
+        eth = [d for d in get_derivatives() if d.get("base","").upper() == "ETH"]
+        sol = [d for d in get_derivatives() if d.get("base","").upper() == "SOL"]
+
+    Or use get_weighted_funding_oi(coin) for the pre-computed result.
+    """
+    now = time.time()
+
+    with _lock:
+        if _derivatives_cache["data"] is not None and now - _derivatives_cache["ts"] < TTL:
+            return _derivatives_cache["data"]
+        try:
+            data = cg_request("/derivatives", params={"include_tickers": "unexpired"})
+            if not isinstance(data, list):
+                raise ValueError(f"unexpected response type: {type(data)}")
+            _derivatives_cache["data"] = data
+            _derivatives_cache["ts"]   = now
+            print(f"[cg_cache] derivatives refreshed — {len(data)} tickers")
+            return data
+        except Exception as e:
+            print(f"[cg_cache] derivatives fetch error: {e}")
+            if _derivatives_cache["data"] is not None:
+                age = int(now - _derivatives_cache["ts"])
+                print(f"[cg_cache] returning stale derivatives (age {age}s)")
+                return _derivatives_cache["data"]
+            return []   # all callers handle empty list gracefully
+
+
+def get_weighted_funding_oi(coin: str) -> dict:
+    """
+    Convenience wrapper: filter derivatives for one coin, return weighted
+    funding rate and total open interest USD.
+
+    coin — "BTC" | "ETH" | "SOL" (case-insensitive)
+
+    Return schema: {"funding": float | None, "open_interest_usd": float | None}
+    Matches the return shape of each route file's old fetch_*_derivatives().
+    """
+    coin    = coin.upper()
+    tickers = [d for d in get_derivatives() if d.get("base", "").upper() == coin]
+
+    if not tickers:
+        return {"funding": None, "open_interest_usd": None}
+
+    total_oi  = sum(float(t.get("open_interest_usd") or 0) for t in tickers)
+    w_funding = (
+        sum(float(t.get("funding_rate") or 0) * float(t.get("open_interest_usd") or 0)
+            for t in tickers)
+        / total_oi if total_oi else 0.0
+    )
+    return {"funding": w_funding, "open_interest_usd": total_oi}
+
+
+# ── /global — stablecoin supply, BTC dominance ───────────────────────────────
+
+def get_global() -> dict:
+    """
+    CoinGecko /global market data, cached for TTL seconds.
+    Returns the inner `data` dict directly.
+
+    Key fields:
+        market_cap_percentage          — {"btc": 58.3, "eth": 12.1, ...}
+        total_market_cap               — {"usd": 3.2e12}
+        total_volume                   — {"usd": ...}
+        active_cryptocurrencies        — int
+        markets                        — int
+
+    Usage in main.py / data_sources.py:
+        from shared.cg_cache import get_global
+        global_data = get_global()
+        btc_dom  = global_data.get("market_cap_percentage", {}).get("btc")
+        sol_dom  = global_data.get("market_cap_percentage", {}).get("sol")
+    """
+    now = time.time()
+
+    with _lock:
+        if _global_cache["data"] is not None and now - _global_cache["ts"] < TTL:
+            return _global_cache["data"]
+        try:
+            resp = cg_request("/global")
+            data = resp.get("data", {}) if isinstance(resp, dict) else {}
+            _global_cache["data"] = data
+            _global_cache["ts"]   = now
+            print("[cg_cache] global refreshed")
+            return data
+        except Exception as e:
+            print(f"[cg_cache] global fetch error: {e}")
+            if _global_cache["data"] is not None:
+                return _global_cache["data"]
+            return {}
+
+
+# ── Cache status — wire to /health or /cache/status endpoint ─────────────────
+
+def cache_status() -> dict:
+    """
+    Snapshot of cache health. Add to your /health endpoint:
+
+        from shared.cg_cache import cache_status as cg_status
+        @app.get("/cache/status")
+        def get_cache_status():
+            return {"cg": cg_status(), ...}
+    """
+    now = time.time()
+    deriv = _derivatives_cache
+    glob  = _global_cache
+    return {
+        "derivatives": {
+            "loaded":  deriv["data"] is not None,
+            "tickers": len(deriv["data"]) if deriv["data"] else 0,
+            "age_s":   int(now - deriv["ts"]) if deriv["ts"] else None,
+            "stale":   bool(deriv["ts"] and now - deriv["ts"] > TTL),
+        },
+        "global": {
+            "loaded": glob["data"] is not None,
+            "age_s":  int(now - glob["ts"]) if glob["ts"] else None,
+            "stale":  bool(glob["ts"] and now - glob["ts"] > TTL),
+        },
+        "ttl_s": TTL,
+    }
