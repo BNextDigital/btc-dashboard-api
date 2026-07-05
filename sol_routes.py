@@ -95,7 +95,9 @@ def _cg(path: str, params: dict = None) -> dict:
     if key:
         headers["x-cg-pro-api-key"] = key
     r = requests.get(f"{CG_BASE}{path}", params=params or {}, headers=headers, timeout=15)
-    r.raise_for_status()
+    if not r.ok:
+        print(f"[sol] CoinGecko HTTP {r.status_code} for {path} — {r.text[:120]}")
+        r.raise_for_status()
     return r.json()
 
 
@@ -430,17 +432,24 @@ def format_dominance(dominance_pct: float) -> dict:
 
 _cg_cache:  dict = {"data": None, "ts": 0.0}
 _met_cache: dict = {"data": None, "ts": 0.0}
-CG_TTL  = 60   # seconds
-MET_TTL = 60
+CG_TTL  = 300   # 5 min — reduces CoinGecko calls; free tier is 30 req/min shared across all route files
+MET_TTL = 300
 
 
 def _get_cg() -> dict:
     now = time.time()
     if _cg_cache["data"] and now - _cg_cache["ts"] < CG_TTL:
         return _cg_cache["data"]
-    result = {**fetch_sol_market(), **fetch_sol_derivatives(), "ohlcv": fetch_sol_ohlcv(30)}
-    _cg_cache.update({"data": result, "ts": now})
-    return result
+    try:
+        result = {**fetch_sol_market(), **fetch_sol_derivatives(), "ohlcv": fetch_sol_ohlcv(30)}
+        _cg_cache.update({"data": result, "ts": now})
+        return result
+    except Exception as e:
+        print(f"[sol] CoinGecko fetch failed: {e}")
+        if _cg_cache["data"]:
+            print(f"[sol] Returning stale cache (age {int(now - _cg_cache['ts'])}s)")
+            return _cg_cache["data"]
+        return {}
 
 
 def _build_metrics() -> dict:
