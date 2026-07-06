@@ -114,29 +114,55 @@ def get_derivatives() -> list[dict]:
             return []   # all callers handle empty list gracefully
 
 
+# Reference exchanges used for funding rate calculation.
+# Matches BTC's data_sources.py REFERENCE_EXCHANGES whitelist.
+# These three have the deepest OI and most reliable funding data across BTC, ETH, SOL.
+REFERENCE_EXCHANGES = {"Binance (Futures)", "Bybit (Futures)", "OKX (Futures)"}
+
+
 def get_weighted_funding_oi(coin: str) -> dict:
     """
-    Convenience wrapper: filter derivatives for one coin, return weighted
-    funding rate and total open interest USD.
+    Filter the shared /derivatives cache for one coin and return OI-weighted
+    funding rate + total open interest USD.
+
+    Mirrors BTC's fetch_funding() logic in data_sources.py exactly:
+      - Filters by index_id (not "base" — that field does not exist in this response)
+      - Restricts to REFERENCE_EXCHANGES (Binance, Bybit, OKX)
+      - Removes clamped boundary rates (CoinGecko caps at ±0.01 = ±1%)
+      - OI-weighted average, not simple mean
 
     coin — "BTC" | "ETH" | "SOL" (case-insensitive)
-
-    Return schema: {"funding": float | None, "open_interest_usd": float | None}
-    Matches the return shape of each route file's old fetch_*_derivatives().
+    Returns: {"funding": float | None, "open_interest_usd": float | None}
     """
-    coin    = coin.upper()
-    tickers = [d for d in get_derivatives() if d.get("base", "").upper() == coin]
+    coin = coin.upper()
+    all_tickers = get_derivatives()
 
-    if not tickers:
+    valid = [
+        t for t in all_tickers
+        if t.get("index_id", "").upper() == coin           # correct field — not "base"
+        and t.get("contract_type") == "perpetual"
+        and t.get("market") in REFERENCE_EXCHANGES         # top-3 exchanges only
+        and t.get("funding_rate") is not None
+        and t.get("open_interest", 0) > 0
+        and t.get("funding_rate") != 0.01                  # CoinGecko clamp ceiling
+        and t.get("funding_rate") != -0.01                 # CoinGecko clamp floor
+    ]
+
+    if not valid:
         return {"funding": None, "open_interest_usd": None}
 
-    total_oi  = sum(float(t.get("open_interest_usd") or 0) for t in tickers)
+    # OI-weighted funding rate (matches data_sources.py exactly)
+    total_oi  = sum(float(t.get("open_interest") or 0) for t in valid)
     w_funding = (
-        sum(float(t.get("funding_rate") or 0) * float(t.get("open_interest_usd") or 0)
-            for t in tickers)
+        sum(float(t.get("funding_rate") or 0) * float(t.get("open_interest") or 0)
+            for t in valid)
         / total_oi if total_oi else 0.0
-    )
-    return {"funding": w_funding, "open_interest_usd": total_oi}
+    ) / 100   # CoinGecko returns funding_rate as percentage, convert to decimal
+
+    # open_interest_usd: use open_interest * index price if open_interest_usd absent
+    total_oi_usd = sum(float(t.get("open_interest_usd") or 0) for t in valid)
+
+    return {"funding": w_funding, "open_interest_usd": total_oi_usd or None}
 
 
 # ── /global — stablecoin supply, BTC dominance ───────────────────────────────
