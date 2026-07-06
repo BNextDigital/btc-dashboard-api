@@ -144,25 +144,23 @@ def get_weighted_funding_oi(coin: str) -> dict:
         and t.get("market") in REFERENCE_EXCHANGES         # top-3 exchanges only
         and t.get("funding_rate") is not None
         and t.get("open_interest", 0) > 0
-        and t.get("funding_rate") != 0.01                  # CoinGecko clamp ceiling
-        and t.get("funding_rate") != -0.01                 # CoinGecko clamp floor
+        # Note: BTC's data_sources.py filters != 0.01 as a clamp guard, but 0.01%/8h
+        # is a valid real rate for SOL/ETH — removing that filter here.
     ]
 
     if not valid:
         return {"funding": None, "open_interest_usd": None}
 
-    # OI-weighted funding rate (matches data_sources.py exactly)
+    # OI-weighted funding rate (matches data_sources.py pattern)
     total_oi  = sum(float(t.get("open_interest") or 0) for t in valid)
     w_funding = (
         sum(float(t.get("funding_rate") or 0) * float(t.get("open_interest") or 0)
             for t in valid)
         / total_oi if total_oi else 0.0
-    ) / 100   # CoinGecko returns funding_rate as percentage, convert to decimal
+    ) / 100   # CoinGecko returns funding_rate as %, convert to decimal
 
-    # open_interest_usd: use open_interest * index price if open_interest_usd absent
-    total_oi_usd = sum(float(t.get("open_interest_usd") or 0) for t in valid)
-
-    return {"funding": w_funding, "open_interest_usd": total_oi_usd or None}
+    # open_interest field confirmed from /derivatives response — no open_interest_usd
+    return {"funding": w_funding, "open_interest_usd": total_oi or None}
 
 
 # ── /global — stablecoin supply, BTC dominance ───────────────────────────────
