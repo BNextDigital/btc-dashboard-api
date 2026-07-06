@@ -668,3 +668,77 @@ def sol_db_summary():
         else:
             results[name] = "not initialized"
     return results
+
+@sol_router.get("/debug/derivatives")
+def sol_debug_derivatives():
+    """
+    Mirrors BTC's /debug/funding endpoint.
+    Call this to inspect what CoinGecko actually returns for SOL perps —
+    field names, exchange names, and index_id values — before trusting
+    any filter logic.
+
+    Hit: GET /sol/debug/derivatives
+    """
+    from shared.cg_cache import get_derivatives, REFERENCE_EXCHANGES
+
+    all_tickers = get_derivatives()
+
+    if not all_tickers:
+        return {"error": "get_derivatives() returned empty — check cg_cache logs"}
+
+    # ── Broad SOL search — no filter assumptions ───────────────────────────
+    # Search for SOL across every string field so we can see what naming
+    # convention CoinGecko actually uses (index_id, base, symbol, etc.)
+    sol_candidates = [
+        t for t in all_tickers
+        if any(
+            "SOL" in str(v).upper()
+            for v in t.values()
+            if isinstance(v, str)
+        )
+    ]
+
+    # ── Strict filter — what get_weighted_funding_oi("SOL") actually does ─
+    sol_strict = [
+        t for t in all_tickers
+        if t.get("index_id", "").upper() == "SOL"
+        and t.get("contract_type") == "perpetual"
+        and t.get("market") in REFERENCE_EXCHANGES
+        and t.get("funding_rate") is not None
+        and t.get("open_interest", 0) > 0
+        and t.get("funding_rate") != 0.01
+        and t.get("funding_rate") != -0.01
+    ]
+
+    # ── Show the keys present on the first SOL candidate ──────────────────
+    sample_keys = list(sol_candidates[0].keys()) if sol_candidates else []
+
+    return {
+        "total_tickers_in_cache":  len(all_tickers),
+        "sol_candidates_broad":    len(sol_candidates),
+        "sol_strict_filter_match": len(sol_strict),
+        "reference_exchanges":     list(REFERENCE_EXCHANGES),
+        "field_keys_on_record":    sample_keys,
+        "candidates": [
+            {
+                "market":        t.get("market"),
+                "symbol":        t.get("symbol"),
+                "index_id":      t.get("index_id"),
+                "base":          t.get("base"),        # may not exist
+                "contract_type": t.get("contract_type"),
+                "funding_rate":  t.get("funding_rate"),
+                "open_interest": t.get("open_interest"),
+            }
+            for t in sol_candidates[:15]
+        ],
+        "strict_matches": [
+            {
+                "market":       t.get("market"),
+                "symbol":       t.get("symbol"),
+                "index_id":     t.get("index_id"),
+                "funding_rate": t.get("funding_rate"),
+                "open_interest":t.get("open_interest"),
+            }
+            for t in sol_strict
+        ],
+    }
