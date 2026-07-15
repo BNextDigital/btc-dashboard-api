@@ -242,40 +242,63 @@ init_dominance_db()
 # ─── CME Basis — fetch & format ────────────────────────────────────────────
 
 def fetch_cme_basis() -> dict:
-    try:
-        import yfinance as yf
-        fut      = yf.Ticker("BTC=F")
-        spot     = yf.Ticker("BTC-USD")
-        fut_info  = fut.info
-        spot_info = spot.info
-        futures_px = fut_info.get("regularMarketPrice") or fut_info.get("previousClose")
-        spot_px    = spot_info.get("regularMarketPrice") or spot_info.get("previousClose")
-        if not futures_px or not spot_px:
-            return {"cme_basis": {"error": "price unavailable"}}
-        expiry_ts = fut_info.get("expireDate")
-        if expiry_ts:
-            expiry_dt   = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
-            days_to_exp = (expiry_dt - datetime.now(timezone.utc)).days
-            if days_to_exp < 5:
-                return {"cme_basis": {"error": f"contract rolling — {days_to_exp}d to expiry, basis unreliable"}}
-            annualized = ((futures_px / spot_px) - 1) * (365 / days_to_exp) * 100
-        else:
-            days_to_exp = 30
-            annualized  = ((futures_px / spot_px) - 1) * 12 * 100
-        if annualized > 50 or annualized < -30:
-            return {"cme_basis": {"error": f"basis out of range ({annualized:.1f}%) — data suspect"}}
-        raw_basis = ((futures_px / spot_px) - 1) * 100
-        return {
-            "cme_basis": {
-                "futures_px":  futures_px,
-                "spot_px":     spot_px,
-                "raw_basis":   raw_basis,
-                "annualized":  annualized,
-                "days_to_exp": days_to_exp,
-            }
+    from shared.yf_cache import get_series
+
+    fut_series  = get_series("btc_futures")   # pd.Series of daily closes — BTC=F
+    spot_series = get_series("btc_usd")       # pd.Series of daily closes — BTC-USD
+
+    if fut_series is None or spot_series is None or len(fut_series) < 2 or len(spot_series) < 2:
+        return {"cme_basis": {"error": "price series unavailable"}}
+
+    futures_px = float(fut_series.iloc[-1])
+    spot_px    = float(spot_series.iloc[-1])
+
+    if futures_px <= 0 or spot_px <= 0:
+        return {"cme_basis": {"error": f"zero/negative price — fut={futures_px} spot={spot_px}"}}
+
+    # Sanity check: futures should be within ±5% of spot
+    price_ratio = futures_px / spot_px
+    if price_ratio < 0.95 or price_ratio > 1.05:
+        return {"cme_basis": {"error": f"futures/spot ratio suspect ({price_ratio:.4f}) — fut={futures_px:.0f} spot={spot_px:.0f}"}}
+
+    # Expiry: calculate next quarterly expiry (3rd Friday of Mar/Jun/Sep/Dec)
+    # yf.download() doesn't return expireDate, so we derive it from the calendar
+    from datetime import date as dt_date
+    today = dt_date.today()
+    quarterly_months = [3, 6, 9, 12]
+    # Find the next quarterly month that hasn't expired yet (use day 20 as cutoff — 3rd Friday is always before day 22)
+    next_q = next(
+        (m for m in quarterly_months if m > today.month or (m == today.month and today.day < 20)),
+        None
+    )
+    if next_q is None:
+        next_q    = quarterly_months[0]
+        exp_year  = today.year + 1
+    else:
+        exp_year  = today.year
+    exp_month = next_q
+
+    first_day   = dt_date(exp_year, exp_month, 1)
+    first_fri   = first_day + timedelta(days=(4 - first_day.weekday()) % 7)
+    third_fri   = first_fri + timedelta(weeks=2)
+    days_to_exp = max((third_fri - today).days, 5)   # floor at 5 to prevent annualisation blowup
+
+    raw_basis  = ((futures_px / spot_px) - 1) * 100
+    annualized = raw_basis * (365 / days_to_exp)
+
+    # Final sanity gate
+    if annualized > 50 or annualized < -30:
+        return {"cme_basis": {"error": f"annualized out of range ({annualized:.1f}%) — fut={futures_px:.0f} spot={spot_px:.0f} days={days_to_exp}"}}
+
+    return {
+        "cme_basis": {
+            "futures_px":  futures_px,
+            "spot_px":     spot_px,
+            "raw_basis":   raw_basis,
+            "annualized":  annualized,
+            "days_to_exp": days_to_exp,
         }
-    except Exception as e:
-        return {"cme_basis": {"error": str(e)}}
+    }
 
 def format_cme_basis(
     annualized: float, raw_basis: float,
