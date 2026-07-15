@@ -186,6 +186,7 @@ ALL_TICKERS: dict[str, str] = {
 
     # ── Crypto ────────────────────────────────────────────────────────────
     "btc_usd":  "BTC-USD",      # Bitcoin spot
+    "btc_futures":  "BTC=F",        # CME Bitcoin front-month futures
 
     # ── Crypto Proxy Stocks ───────────────────────────────────────────────
     "mstr":     "MSTR",         # MicroStrategy
