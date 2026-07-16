@@ -1,5 +1,5 @@
 """
-shared/cg_cache.py — Shared CoinGecko cache layer
+shared/cg_cache.py — Shared CoinGecko cache layer 
 ===================================================
 Centralises CoinGecko endpoints called by more than one route file.
 
