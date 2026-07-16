@@ -1970,3 +1970,64 @@ def get_cache_status():
         },
         "fred": fred_status(),
     }
+
+@app.get("/btc-premium")
+def get_btc_premium():
+    """
+    North American BTC Premium (Coinbase vs Binance).
+    Computed from shared/cg_cache.py — modular pair registry in PREMIUM_PAIRS.
+    """
+    from shared.cg_cache import get_north_american_premium
+    data = get_north_american_premium()
+
+    if data.get("premium_usd") is None:
+        return {
+            "error":          data.get("error", "price unavailable"),
+            "onshore_label":  data.get("onshore_label", "Coinbase"),
+            "offshore_label": data.get("offshore_label", "Binance"),
+            "onshore_price":  None,
+            "offshore_price": None,
+            "premium_usd":    None,
+            "premium_bps":    None,
+            "premium_pct":    None,
+            "alert":          "Data unavailable",
+            "alert_level":    "none",
+            "pattern":        "—",
+        }
+
+    bps = data["premium_bps"]
+
+    # Alert thresholds — Coinbase premium historically:
+    # > +20 bps  = strong US institutional buy pressure
+    # > +10 bps  = elevated US demand
+    # < -10 bps  = US selling / offshore leading
+    # < -20 bps  = strong US distribution signal
+    if bps > 20:
+        alert = "Strong US premium — institutional buy pressure"
+        alert_level = "extreme"
+    elif bps > 10:
+        alert = "Elevated US premium — US demand leading"
+        alert_level = "notable"
+    elif bps < -20:
+        alert = "Strong US discount — distribution signal"
+        alert_level = "extreme"
+    elif bps < -10:
+        alert = "US discount — offshore market leading"
+        alert_level = "notable"
+    else:
+        alert = "—"
+        alert_level = "none"
+
+    if bps > 5:
+        pattern = "US buyers paying premium — demand-side pressure"
+    elif bps < -5:
+        pattern = "US sellers at discount — supply-side pressure"
+    else:
+        pattern = "Parity — no significant regional flow divergence"
+
+    return {
+        **data,
+        "alert":       alert,
+        "alert_level": alert_level,
+        "pattern":     pattern,
+    }
