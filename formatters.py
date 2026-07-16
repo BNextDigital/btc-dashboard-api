@@ -245,6 +245,7 @@ def format_exchange_netflow(
     sum_7d_btc: float,
     avg_30d_btc: float,
     percentile_90d: float,
+    sum_30d_btc: float = 0.0,   # ← new, default 0 so mock/override paths don't break
     **kwargs,
 ) -> dict:
     ratio_30d = sum_7d_btc / avg_30d_btc if avg_30d_btc else 0
@@ -259,10 +260,10 @@ def format_exchange_netflow(
         alert   = "—"
         pattern = "—"
 
-    # vs30d: multiple of 30d avg + nominal BTC difference
+    # vs30d: multiple of 30d avg + 30d running total
     if avg_30d_btc and ratio_30d:
-        diff_btc  = sum_7d_btc - avg_30d_btc
-        vs30d_str = f"{ratio_30d:+.1f}x 30d avg ({_format_btc(diff_btc)})"
+        total_str = f" · {_format_btc(sum_30d_btc)} 30d total" if sum_30d_btc else ""
+        vs30d_str = f"{ratio_30d:+.1f}x 30d avg ({_format_btc(sum_7d_btc - avg_30d_btc)}){total_str}"
     else:
         vs30d_str = "—"
 
@@ -279,7 +280,6 @@ def format_exchange_netflow(
         "pattern":     pattern,
         "spark":       kwargs.get("_spark", []),
     }
-
 
 # ─── VOLUME ────────────────────────────────────────────────────────────────
 
