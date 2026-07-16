@@ -201,21 +201,161 @@ def get_global() -> dict:
                 return _global_cache["data"]
             return {}
 
+# ── Exchange Spot Tickers — North American Premium ────────────────────────────
+#
+# MODULAR PAIR REGISTRY
+# To add a new exchange pair: add one entry to each side.
+# Keys must match CoinGecko exchange IDs (check /exchanges endpoint).
+# "onshore"  = North American / regulated USD venues
+# "offshore" = Global / USDT-denominated venues
+#
+# Current build: Coinbase Pro (gdax) vs Binance (binance)
+# Future candidates:
+#   onshore:  "kraken", "gemini", "bitstamp"
+#   offshore: "bybit_spot", "okex", "gate"
+
+PREMIUM_PAIRS: dict[str, list[dict]] = {
+    "onshore": [
+        {"exchange_id": "gdax",    "label": "Coinbase", "pair": "BTC/USD"},
+    ],
+    "offshore": [
+        {"exchange_id": "binance", "label": "Binance",  "pair": "BTC/USDT"},
+    ],
+}
+
+# Separate TTL for exchange tickers — these update frequently, but we're
+# already on a 60s dashboard refresh, so 60s here avoids hammering CG free tier.
+_PREMIUM_TTL = 60
+
+_premium_cache: dict = {"data": None, "ts": 0.0}
+
+
+def get_exchange_spot_prices() -> dict:
+    """
+    Fetch last trade price for each exchange in PREMIUM_PAIRS.
+    Returns:
+    {
+        "onshore":  [{"label": "Coinbase", "exchange_id": "gdax",    "pair": "BTC/USD",  "price": 105432.10}],
+        "offshore": [{"label": "Binance",  "exchange_id": "binance", "pair": "BTC/USDT", "price": 105418.55}],
+    }
+    Returns None values for any exchange that fails — caller handles gracefully.
+    """
+    now = time.time()
+
+    with _lock:
+        if _premium_cache["data"] is not None and now - _premium_cache["ts"] < _PREMIUM_TTL:
+            return _premium_cache["data"]
+
+        result: dict[str, list] = {"onshore": [], "offshore": []}
+
+        for side, pairs in PREMIUM_PAIRS.items():
+            for pair_cfg in pairs:
+                exchange_id = pair_cfg["exchange_id"]
+                target_pair = pair_cfg["pair"]          # e.g. "BTC/USD"
+                label       = pair_cfg["label"]
+
+                price = None
+                try:
+                    # /exchanges/{id}/tickers?coin_ids=bitcoin&depth=false
+                    # Returns list of tickers; we filter for our target pair.
+                    data = cg_request(
+                        f"/exchanges/{exchange_id}/tickers",
+                        params={"coin_ids": "bitcoin", "depth": "false"},
+                    )
+                    tickers = data.get("tickers", []) if isinstance(data, dict) else []
+
+                    # Match on base/target — CoinGecko uses "BTC" / "USD" or "USDT"
+                    base_want, quote_want = target_pair.split("/")
+                    match = next(
+                        (t for t in tickers
+                         if t.get("base", "").upper()   == base_want.upper()
+                         and t.get("target", "").upper() == quote_want.upper()),
+                        None,
+                    )
+                    if match:
+                        price = match.get("last")   # last trade price as float
+
+                    print(f"[cg_cache] premium: {label} {target_pair} = {price}")
+
+                except Exception as e:
+                    print(f"[cg_cache] premium fetch error ({exchange_id}): {e}")
+
+                result[side].append({
+                    **pair_cfg,
+                    "price": float(price) if price is not None else None,
+                })
+
+        _premium_cache["data"] = result
+        _premium_cache["ts"]   = now
+        return result
+
+
+def get_north_american_premium() -> dict:
+    """
+    Computes the North American BTC premium from PREMIUM_PAIRS.
+
+    Returns:
+    {
+        "premium_usd":   12.55,          # onshore - offshore (USD)
+        "premium_bps":   1.2,            # basis points
+        "premium_pct":   0.012,          # as a raw float (0.012 = 0.012%)
+        "onshore_price": 105432.10,      # avg of all onshore venues
+        "offshore_price": 105418.55,     # avg of all offshore venues
+        "onshore_label": "Coinbase",     # single label or "Avg (N)" if multiple
+        "offshore_label": "Binance",
+        "pairs": { ... }                 # raw per-exchange prices for debug
+    }
+    Returns None if either side has no valid price.
+    """
+    raw = get_exchange_spot_prices()
+
+    def avg_price(entries: list[dict]) -> tuple[float | None, str]:
+        valid = [e for e in entries if e["price"] is not None]
+        if not valid:
+            return None, "—"
+        avg   = sum(e["price"] for e in valid) / len(valid)
+        label = valid[0]["label"] if len(valid) == 1 else f"Avg ({len(valid)})"
+        return avg, label
+
+    onshore_price,  onshore_label  = avg_price(raw["onshore"])
+    offshore_price, offshore_label = avg_price(raw["offshore"])
+
+    if onshore_price is None or offshore_price is None:
+        return {
+            "premium_usd":    None,
+            "premium_bps":    None,
+            "premium_pct":    None,
+            "onshore_price":  onshore_price,
+            "offshore_price": offshore_price,
+            "onshore_label":  onshore_label,
+            "offshore_label": offshore_label,
+            "pairs":          raw,
+            "error":          "price unavailable for one or both sides",
+        }
+
+    premium_usd = onshore_price - offshore_price
+    premium_pct = (premium_usd / offshore_price) * 100   # in percent
+    premium_bps = premium_pct * 100                       # basis points
+
+    return {
+        "premium_usd":    round(premium_usd, 2),
+        "premium_bps":    round(premium_bps, 2),
+        "premium_pct":    round(premium_pct, 4),
+        "onshore_price":  round(onshore_price, 2),
+        "offshore_price": round(offshore_price, 2),
+        "onshore_label":  onshore_label,
+        "offshore_label": offshore_label,
+        "pairs":          raw,
+    }
+
 
 # ── Cache status — wire to /health or /cache/status endpoint ─────────────────
 
 def cache_status() -> dict:
-    """
-    Snapshot of cache health. Add to your /health endpoint:
-
-        from shared.cg_cache import cache_status as cg_status
-        @app.get("/cache/status")
-        def get_cache_status():
-            return {"cg": cg_status(), ...}
-    """
     now = time.time()
-    deriv = _derivatives_cache
-    glob  = _global_cache
+    deriv    = _derivatives_cache
+    glob     = _global_cache
+    premium  = _premium_cache
     return {
         "derivatives": {
             "loaded":  deriv["data"] is not None,
@@ -227,6 +367,11 @@ def cache_status() -> dict:
             "loaded": glob["data"] is not None,
             "age_s":  int(now - glob["ts"]) if glob["ts"] else None,
             "stale":  bool(glob["ts"] and now - glob["ts"] > TTL),
+        },
+        "premium": {
+            "loaded": premium["data"] is not None,
+            "age_s":  int(now - premium["ts"]) if premium["ts"] else None,
+            "stale":  bool(premium["ts"] and now - premium["ts"] > _PREMIUM_TTL),
         },
         "ttl_s": TTL,
     }
