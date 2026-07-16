@@ -201,6 +201,7 @@ def get_global() -> dict:
                 return _global_cache["data"]
             return {}
 
+
 # ── Exchange Spot Tickers — North American Premium ────────────────────────────
 #
 # MODULAR PAIR REGISTRY
@@ -239,6 +240,9 @@ def get_exchange_spot_prices() -> dict:
         "offshore": [{"label": "Binance",  "exchange_id": "binance", "pair": "BTC/USDT", "price": 105418.55}],
     }
     Returns None values for any exchange that fails — caller handles gracefully.
+
+    CACHE POLICY: only caches when at least one side returned a real price.
+    Failed fetches are NOT cached so the next call retries immediately.
     """
     now = time.time()
 
@@ -257,25 +261,33 @@ def get_exchange_spot_prices() -> dict:
                 price = None
                 try:
                     # /exchanges/{id}/tickers?coin_ids=bitcoin&depth=false
-                    # Returns list of tickers; we filter for our target pair.
-                    data = cg_request(
+                    # Returns {"name": "...", "tickers": [...]}
+                    # Each ticker has top-level "base", "target", "last" fields —
+                    # confirmed from live CoinGecko response 2026-07-16.
+                    data    = cg_request(
                         f"/exchanges/{exchange_id}/tickers",
                         params={"coin_ids": "bitcoin", "depth": "false"},
                     )
                     tickers = data.get("tickers", []) if isinstance(data, dict) else []
 
-                    # Match on base/target — CoinGecko uses "BTC" / "USD" or "USDT"
+                    # Match on base/target at top level (not nested in market{})
                     base_want, quote_want = target_pair.split("/")
                     match = next(
                         (t for t in tickers
-                         if t.get("base", "").upper()   == base_want.upper()
-                         and t.get("target", "").upper() == quote_want.upper()),
+                         if t.get("base",   "").upper() == base_want.upper()
+                         and t.get("target", "").upper() == quote_want.upper()
+                         and not t.get("is_anomaly", False)   # skip flagged anomaly tickers
+                         and not t.get("is_stale",   False)), # skip stale tickers
                         None,
                     )
                     if match:
-                        price = match.get("last")   # last trade price as float
-
-                    print(f"[cg_cache] premium: {label} {target_pair} = {price}")
+                        price = match.get("last")
+                        print(f"[cg_cache] premium: {label} {target_pair} = {price} "
+                              f"(stale={match.get('is_stale')}, anomaly={match.get('is_anomaly')})")
+                    else:
+                        print(f"[cg_cache] premium: {label} {target_pair} — no matching ticker "
+                              f"(got {len(tickers)} tickers, bases: "
+                              f"{list(set(t.get('base','') for t in tickers[:10]))})")
 
                 except Exception as e:
                     print(f"[cg_cache] premium fetch error ({exchange_id}): {e}")
@@ -285,8 +297,21 @@ def get_exchange_spot_prices() -> dict:
                     "price": float(price) if price is not None else None,
                 })
 
-        _premium_cache["data"] = result
-        _premium_cache["ts"]   = now
+        # Only cache if at least one side got a real price.
+        # A fully-null result means the fetch failed (rate limit, network, etc.)
+        # and should not be stored — next call will retry immediately.
+        any_price = any(
+            e["price"] is not None
+            for side in result.values()
+            for e in side
+        )
+        if any_price:
+            _premium_cache["data"] = result
+            _premium_cache["ts"]   = now
+            print(f"[cg_cache] premium cache updated")
+        else:
+            print(f"[cg_cache] premium: all prices null — skipping cache, will retry next call")
+
         return result
 
 
@@ -296,16 +321,16 @@ def get_north_american_premium() -> dict:
 
     Returns:
     {
-        "premium_usd":   12.55,          # onshore - offshore (USD)
-        "premium_bps":   1.2,            # basis points
-        "premium_pct":   0.012,          # as a raw float (0.012 = 0.012%)
-        "onshore_price": 105432.10,      # avg of all onshore venues
+        "premium_usd":    12.55,         # onshore - offshore (USD)
+        "premium_bps":    1.2,           # basis points
+        "premium_pct":    0.012,         # as a raw float (0.012 = 0.012%)
+        "onshore_price":  105432.10,     # avg of all onshore venues
         "offshore_price": 105418.55,     # avg of all offshore venues
-        "onshore_label": "Coinbase",     # single label or "Avg (N)" if multiple
+        "onshore_label":  "Coinbase",    # single label or "Avg (N)" if multiple
         "offshore_label": "Binance",
         "pairs": { ... }                 # raw per-exchange prices for debug
     }
-    Returns None if either side has no valid price.
+    Returns None values if either side has no valid price.
     """
     raw = get_exchange_spot_prices()
 
@@ -352,10 +377,18 @@ def get_north_american_premium() -> dict:
 # ── Cache status — wire to /health or /cache/status endpoint ─────────────────
 
 def cache_status() -> dict:
-    now = time.time()
-    deriv    = _derivatives_cache
-    glob     = _global_cache
-    premium  = _premium_cache
+    """
+    Snapshot of cache health. Add to your /health endpoint:
+
+        from shared.cg_cache import cache_status as cg_status
+        @app.get("/cache/status")
+        def get_cache_status():
+            return {"cg": cg_status(), ...}
+    """
+    now     = time.time()
+    deriv   = _derivatives_cache
+    glob    = _global_cache
+    premium = _premium_cache
     return {
         "derivatives": {
             "loaded":  deriv["data"] is not None,
