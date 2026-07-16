@@ -26,6 +26,11 @@ def init_db() -> None:
 
 def store_snapshot(oi_usd: float) -> None:
     ts = int(time.time())
+    # Guard against clock skew or bad timestamps
+    now = int(time.time())
+    if ts > now + 60:
+        print(f"[oi_history] WARNING: timestamp {ts} is in the future, clamping to now")
+        ts = now
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "INSERT INTO oi_snapshots (timestamp, oi_usd) VALUES (?, ?)",
