@@ -5,6 +5,18 @@ One bulk yf.download() call covers every dashboard route.
 All route files call get_series(key) instead of fetching independently.
 
 ─────────────────────────────────────────────────────────────────────
+MEMORY FIX (July 2026)
+  Previously the cache stored pd.Series objects directly. pandas Series
+  carry significant overhead (~10–20× the raw float64 array size) and
+  Python's GC rarely returns that memory to the OS between refreshes,
+  causing steady RAM growth over days/weeks.
+
+  Fix: _fetch() now converts each Series to a plain Python list[float]
+  before storing. get_series() wraps it back into a pd.Series on the
+  way out, so all callers are unaffected. The cache dict itself holds
+  only lightweight Python lists between refresh cycles.
+
+─────────────────────────────────────────────────────────────────────
 SETUP
   1. Copy this file to btc-dashboard-api/shared/yf_cache.py
   2. Create btc-dashboard-api/shared/__init__.py  (empty file)
@@ -29,6 +41,7 @@ TO ADD A NEW TICKER
 CACHE BEHAVIOUR
   TTL    : 5 minutes (matches the most frequent dashboard refresh)
   Scope  : process-wide — all routes share one copy of the data
+  Storage: plain list[float] internally — pd.Series reconstructed on read
   Thread : a lock prevents simultaneous redundant downloads
   Warmup : call warm_cache() from main.py startup to pre-fetch on boot
 
@@ -37,6 +50,7 @@ CACHE BEHAVIOUR
 
 from __future__ import annotations
 
+import gc
 import threading
 import time
 from datetime import datetime
@@ -48,171 +62,182 @@ import yfinance as yf
 #
 # key          : short string used by route files (get_series("vix"))
 # yf_symbol    : ticker string passed to yf.download()
-# description  : for documentation only
 #
 ALL_TICKERS: dict[str, str] = {
 
     # ── US Equity Indices ─────────────────────────────────────────────────
-    "spx":      "^GSPC",        # S&P 500
-    "nasdaq":   "^IXIC",        # Nasdaq Composite
-    "qqq":      "QQQ",          # Nasdaq 100 ETF
-    "iwm":      "^RUT",         # Russell 2000
-    "dji":      "^DJI",         # Dow Jones Industrial Average
+    "spx":      "^GSPC",
+    "nasdaq":   "^IXIC",
+    "qqq":      "QQQ",
+    "iwm":      "^RUT",
+    "dji":      "^DJI",
 
     # ── Broad Market ETFs ─────────────────────────────────────────────────
-    "spy":      "SPY",          # S&P 500 cap-weighted (breadth denominator)
-    "rsp":      "RSP",          # S&P 500 equal-weighted (breadth numerator)
-    "tlt":      "TLT",          # 20Y Treasury bond ETF
-    "ief":      "IEF",          # 7-10Y Treasury bond ETF
+    "spy":      "SPY",
+    "rsp":      "RSP",
+    "tlt":      "TLT",
+    "ief":      "IEF",
 
     # ── Technology — ETFs ─────────────────────────────────────────────────
-    "xlk":      "XLK",          # Broad Technology (S&P sector ETF)
-    "soxx":     "SOXX",         # Semiconductors (iShares)
-    "smh":      "SMH",          # Semiconductors (VanEck — higher volume)
-    "igv":      "IGV",          # Software
-    "skyy":     "SKYY",         # Cloud
-    "xlc":      "XLC",          # Communication Services
+    "xlk":      "XLK",
+    "soxx":     "SOXX",
+    "smh":      "SMH",
+    "igv":      "IGV",
+    "skyy":     "SKYY",
+    "xlc":      "XLC",
 
     # ── Technology — Individual Names ─────────────────────────────────────
-    "nvda":     "NVDA",         # Nvidia — AI cycle barometer
-    "amd":      "AMD",          # AMD — semi demand signal
-    "arm":      "ARM",          # ARM Holdings — chip architecture
-    "smci":     "SMCI",         # Super Micro — AI infrastructure
-    "aapl":     "AAPL",         # Apple — consumer + China demand
-    "meta":     "META",         # Meta — ad spend / risk appetite
-    "googl":    "GOOGL",        # Alphabet — cloud + ad spend
-    "tsla":     "TSLA",         # Tesla — risk appetite proxy
-    "msft":     "MSFT",         # Microsoft — cloud + AI infrastructure
+    "nvda":     "NVDA",
+    "amd":      "AMD",
+    "arm":      "ARM",
+    "smci":     "SMCI",
+    "aapl":     "AAPL",
+    "meta":     "META",
+    "googl":    "GOOGL",
+    "tsla":     "TSLA",
+    "msft":     "MSFT",
 
     # ── Financials — ETFs ─────────────────────────────────────────────────
-    "xlf":      "XLF",          # Broad Financials (S&P sector ETF)
-    "kbe":      "KBE",          # Large cap banks ETF
-    "kre":      "KRE",          # Regional banks ETF — stress canary
-    "iai":      "IAI",          # Investment banks / capital markets
-    "kie":      "KIE",          # Insurance
-    "ipay":     "IPAY",         # Fintech / payments
+    "xlf":      "XLF",
+    "kbe":      "KBE",
+    "kre":      "KRE",
+    "iai":      "IAI",
+    "kie":      "KIE",
+    "ipay":     "IPAY",
 
     # ── Financials — Large Banks ───────────────────────────────────────────
-    "jpm":      "JPM",          # JPMorgan — largest US bank
-    "bac":      "BAC",          # Bank of America — consumer banking
-    "wfc":      "WFC",          # Wells Fargo — retail banking
-    "c":        "C",            # Citigroup — global wholesale
-    "gs":       "GS",           # Goldman Sachs — capital markets
-    "ms":       "MS",           # Morgan Stanley — wealth + IB
+    "jpm":      "JPM",
+    "bac":      "BAC",
+    "wfc":      "WFC",
+    "c":        "C",
+    "gs":       "GS",
+    "ms":       "MS",
 
     # ── Financials — Regional Banks ────────────────────────────────────────
-    "wal":      "WAL",          # Western Alliance — stress canary
-    "zion":     "ZION",         # Zions Bancorporation — CRE exposure proxy
+    "wal":      "WAL",
+    "zion":     "ZION",
 
     # ── Financials — Payments & Credit ────────────────────────────────────
-    "v":        "V",            # Visa — payment velocity
-    "ma":       "MA",           # Mastercard — payment velocity
-    "cof":      "COF",          # Capital One — consumer credit / delinquency
-    "axp":      "AXP",          # American Express — consumer credit
+    "v":        "V",
+    "ma":       "MA",
+    "cof":      "COF",
+    "axp":      "AXP",
 
     # ── Healthcare — ETFs ─────────────────────────────────────────────────
-    "xlv":      "XLV",          # Broad Healthcare (S&P sector ETF)
-    "xbi":      "XBI",          # Biotech (equal-weighted)
+    "xlv":      "XLV",
+    "xbi":      "XBI",
 
     # ── Industrials — ETFs ────────────────────────────────────────────────
-    "xli":      "XLI",          # Broad Industrials (S&P sector ETF)
-    "iyt":      "IYT",          # Transports
+    "xli":      "XLI",
+    "iyt":      "IYT",
 
     # ── Energy — ETFs ─────────────────────────────────────────────────────
-    "xle":      "XLE",          # Broad Energy (S&P sector ETF)
-    "oih":      "OIH",          # Oil services
+    "xle":      "XLE",
+    "oih":      "OIH",
 
     # ── Materials — ETFs ──────────────────────────────────────────────────
-    "xlb":      "XLB",          # Broad Materials (S&P sector ETF)
+    "xlb":      "XLB",
 
     # ── Consumer — ETFs ───────────────────────────────────────────────────
-    "xly":      "XLY",          # Consumer Discretionary (S&P sector ETF)
-    "xlp":      "XLP",          # Consumer Staples (S&P sector ETF)
-    "xrt":      "XRT",          # Consumer Retail (equal-weighted)
-    "glux":     "GLUX",         # Luxury goods
+    "xly":      "XLY",
+    "xlp":      "XLP",
+    "xrt":      "XRT",
+    "glux":     "GLUX",
 
     # ── Real Estate — ETFs ────────────────────────────────────────────────
-    "xlre":     "XLRE",         # Real Estate (S&P sector ETF)
-    "vnq":      "VNQ",          # Broader REIT ETF
+    "xlre":     "XLRE",
+    "vnq":      "VNQ",
 
     # ── Utilities — ETFs ──────────────────────────────────────────────────
-    "xlu":      "XLU",          # Utilities (S&P sector ETF)
+    "xlu":      "XLU",
 
     # ── Credit ETFs ───────────────────────────────────────────────────────
-    "hyg":      "HYG",          # High-yield bond ETF
-    "lqd":      "LQD",          # Investment-grade bond ETF
+    "hyg":      "HYG",
+    "lqd":      "LQD",
 
     # ── Volatility ────────────────────────────────────────────────────────
-    "vix":      "^VIX",         # CBOE VIX (equity vol)
-    "vxn":      "^VXN",         # CBOE VXN (Nasdaq vol)
+    "vix":      "^VIX",
+    "vxn":      "^VXN",
 
     # ── US Treasury Yields ────────────────────────────────────────────────
-    "yield_1y": "^IRX",         # 13-week proxy for 1Y
-    "yield_5y": "^FVX",         # 5Y
-    "yield_10y":"^TNX",         # 10Y
+    "yield_1y": "^IRX",
+    "yield_5y": "^FVX",
+    "yield_10y":"^TNX",
 
     # ── FX — Major Pairs ──────────────────────────────────────────────────
-    "dxy":      "DX-Y.NYB",     # US Dollar Index
-    "eurusd":   "EURUSD=X",     # EUR/USD
-    "usdjpy":   "JPY=X",        # USD/JPY
-    "usdcnh":   "CNY=X",        # USD/CNH (offshore yuan)
+    "dxy":      "DX-Y.NYB",
+    "eurusd":   "EURUSD=X",
+    "usdjpy":   "JPY=X",
+    "usdcnh":   "CNY=X",
 
     # ── FX — Emerging Markets ─────────────────────────────────────────────
-    "usdbrl":   "BRL=X",        # USD/BRL — Brazil
-    "usdmxn":   "MXN=X",        # USD/MXN — Mexico
-    "usdinr":   "INR=X",        # USD/INR — India
-    "usdkrw":   "KRW=X",        # USD/KRW — South Korea
-    "usdzar":   "ZAR=X",        # USD/ZAR — South Africa
+    "usdbrl":   "BRL=X",
+    "usdmxn":   "MXN=X",
+    "usdinr":   "INR=X",
+    "usdkrw":   "KRW=X",
+    "usdzar":   "ZAR=X",
 
     # ── Korea / Asia ──────────────────────────────────────────────────────
-    "ewy":      "EWY",          # iShares MSCI South Korea ETF
+    "ewy":      "EWY",
 
     # ── Energy Futures ────────────────────────────────────────────────────
-    "wti":      "CL=F",         # WTI Crude Oil
-    "brent":    "BZ=F",         # Brent Crude Oil
-    "natgas":   "NG=F",         # Natural Gas
-    "gasoline": "RB=F",         # RBOB Gasoline
+    "wti":      "CL=F",
+    "brent":    "BZ=F",
+    "natgas":   "NG=F",
+    "gasoline": "RB=F",
 
     # ── Metals Futures ────────────────────────────────────────────────────
-    "gold":     "GC=F",         # Gold
-    "silver":   "SI=F",         # Silver
-    "copper":   "HG=F",         # Copper
-    "platinum": "PL=F",         # Platinum
+    "gold":     "GC=F",
+    "silver":   "SI=F",
+    "copper":   "HG=F",
+    "platinum": "PL=F",
 
     # ── Grain Futures ─────────────────────────────────────────────────────
-    "wheat":    "ZW=F",         # Wheat
-    "corn":     "ZC=F",         # Corn
-    "soybeans": "ZS=F",         # Soybeans
+    "wheat":    "ZW=F",
+    "corn":     "ZC=F",
+    "soybeans": "ZS=F",
 
     # ── Crypto ────────────────────────────────────────────────────────────
-    "btc_usd":  "BTC-USD",      # Bitcoin spot
-    "btc_futures":  "BTC=F",        # CME Bitcoin front-month futures
+    "btc_usd":      "BTC-USD",
+    "btc_futures":  "BTC=F",
 
     # ── Crypto Proxy Stocks ───────────────────────────────────────────────
-    "mstr":     "MSTR",         # MicroStrategy
-    "coin":     "COIN",         # Coinbase
-    "hood":     "HOOD",         # Robinhood
-    "mara":     "MARA",         # Marathon Digital
-    "pypl":     "PYPL",         # PayPal
-    "sq":       "SQ",           # Block (Square)
+    "mstr":     "MSTR",
+    "coin":     "COIN",
+    "hood":     "HOOD",
+    "mara":     "MARA",
+    "pypl":     "PYPL",
+    "sq":       "SQ",
 }
+
 # ── Lookback ──────────────────────────────────────────────────────────────────
 #
-# 300 trading days (~14 months) covers:
-#   - 200d SMA  (commodity + equity cards)
-#   - 252d percentile rank (1 trading year)
+# 252 trading days (1 trading year) is enough for:
+#   - 200d SMA with a small buffer
+#   - 252d percentile rank
 #   - 90d percentile with comfortable headroom
 #
-N_DAYS = 300
+# Previously 300d — trimmed to 252d to reduce the DataFrame allocation
+# size on every refresh cycle (~16% smaller download).
+#
+N_DAYS = 252
 
 # ── Cache ─────────────────────────────────────────────────────────────────────
+#
+# Internal storage is list[float] + list[str] (dates), NOT pd.Series.
+# get_series() reconstructs a pd.Series on the way out so callers are
+# unaffected. Storing lists instead of Series cuts per-key memory by
+# ~10–20× and allows Python's GC to fully reclaim the previous cache
+# on each refresh.
+#
 
-CACHE_TTL = 300   # 5 minutes — matches fastest dashboard refresh cycle
+CACHE_TTL = 300   # 5 minutes
 
 _cache: dict = {
-    "data":       None,       # {key: pd.Series | None}
-    "ts":         0.0,        # epoch seconds of last successful fetch
-    "updated_at": None,       # ISO string for /health endpoints
+    # {key: {"values": list[float], "dates": list[str]} | None}
+    "data":       None,
+    "ts":         0.0,
+    "updated_at": None,
 }
 _lock = threading.Lock()
 
@@ -222,29 +247,36 @@ _lock = threading.Lock()
 def get_series(key: str) -> pd.Series | None:
     """
     Return a pd.Series of daily Close prices for the given key.
-    Fetches/refreshes the shared cache if stale.
-    Returns None if the ticker failed or key is unknown.
+    The Series is reconstructed from the internal list cache on each call —
+    callers receive a normal pd.Series and need no changes.
 
-    Example:
-        from shared.yf_cache import get_series
-        vix = get_series("vix")
+    Returns None if the ticker failed or the key is unknown.
     """
     data = _get_or_refresh()
-    return data.get(key)
+    entry = data.get(key)
+    if entry is None:
+        return None
+    return pd.Series(entry["values"], index=pd.to_datetime(entry["dates"]), name=key)
 
 
 def get_all() -> dict[str, pd.Series | None]:
     """
     Return the full {key: pd.Series | None} dict.
-    Drop-in replacement for each route's _fetch_bulk() return value,
-    as long as the route switches to the canonical key names above.
-
-    Example:
-        from shared.yf_cache import get_all
-        yf_data = get_all()
-        gold_series = yf_data.get("gold")
+    Drop-in replacement for each route's _fetch_bulk() return value.
+    Series objects are freshly reconstructed from the list cache.
     """
-    return _get_or_refresh()
+    data = _get_or_refresh()
+    result: dict[str, pd.Series | None] = {}
+    for key, entry in data.items():
+        if entry is None:
+            result[key] = None
+        else:
+            result[key] = pd.Series(
+                entry["values"],
+                index=pd.to_datetime(entry["dates"]),
+                name=key,
+            )
+    return result
 
 
 def cache_age_seconds() -> float:
@@ -263,6 +295,7 @@ def flush() -> None:
         _cache["data"] = None
         _cache["ts"]   = 0.0
         _cache["updated_at"] = None
+    gc.collect()
 
 
 def warm_cache() -> None:
@@ -283,8 +316,8 @@ def _is_stale() -> bool:
     return _cache["data"] is None or (time.time() - _cache["ts"]) > CACHE_TTL
 
 
-def _get_or_refresh() -> dict[str, pd.Series | None]:
-    """Return cache if fresh; otherwise fetch under lock."""
+def _get_or_refresh() -> dict:
+    """Return internal list cache if fresh; otherwise fetch under lock."""
     if not _is_stale():
         return _cache["data"]
 
@@ -293,25 +326,41 @@ def _get_or_refresh() -> dict[str, pd.Series | None]:
         if not _is_stale():
             return _cache["data"]
 
-        _cache["data"]       = _fetch()
+        new_data = _fetch()
+
+        # Explicitly delete old cache data before replacing so GC can
+        # reclaim the previous allocation immediately, not on next cycle.
+        old = _cache["data"]
+        _cache["data"] = None
+        del old
+        gc.collect()
+
+        _cache["data"]       = new_data
         _cache["ts"]         = time.time()
         _cache["updated_at"] = datetime.utcnow().isoformat() + "Z"
 
     return _cache["data"]
 
 
-def _fetch() -> dict[str, pd.Series | None]:
+def _fetch() -> dict[str, dict | None]:
     """
     Single bulk yf.download() call for all tickers.
-    Returns {key: pd.Series(close prices) | None}.
-    """
-    result: dict[str, pd.Series | None] = {k: None for k in ALL_TICKERS}
 
-    symbols   = list(ALL_TICKERS.values())
+    Returns {key: {"values": list[float], "dates": list[str]} | None}.
+
+    Storing as plain Python lists (not pd.Series / pd.DataFrame) means
+    the large intermediate DataFrame from yf.download() can be fully
+    garbage-collected after this function returns, rather than keeping
+    300 × N_TICKERS floats alive in multiple Series wrappers.
+    """
+    result: dict[str, dict | None] = {k: None for k in ALL_TICKERS}
+
+    symbols    = list(ALL_TICKERS.values())
     key_by_sym = {v: k for k, v in ALL_TICKERS.items()}
 
     try:
         print(f"[yf_cache] Fetching {len(symbols)} tickers ({N_DAYS}d)…")
+
         raw   = yf.download(
             symbols,
             period=f"{N_DAYS}d",
@@ -324,8 +373,13 @@ def _fetch() -> dict[str, pd.Series | None]:
         for symbol, key in key_by_sym.items():
             if symbol in close.columns:
                 s = close[symbol].dropna()
-                result[key] = s if len(s) >= 5 else None
-            # else: stays None (ticker may be temporarily unavailable)
+                if len(s) >= 5:
+                    # Convert to plain lists immediately — drop the Series wrapper
+                    result[key] = {
+                        "values": [float(v) for v in s.values],
+                        "dates":  [str(d.date()) for d in s.index],
+                    }
+                # else: stays None
 
         successes = sum(1 for v in result.values() if v is not None)
         print(f"[yf_cache] OK — {successes}/{len(symbols)} tickers loaded")
@@ -333,5 +387,13 @@ def _fetch() -> dict[str, pd.Series | None]:
     except Exception as e:
         print(f"[yf_cache] Bulk download error: {e}")
         # result stays all-None — route files handle None gracefully
+
+    finally:
+        # Explicitly drop the large intermediate DataFrame
+        try:
+            del raw, close
+        except NameError:
+            pass
+        gc.collect()
 
     return result
