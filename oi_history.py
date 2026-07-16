@@ -26,12 +26,14 @@ def init_db() -> None:
 
 def store_snapshot(oi_usd: float) -> None:
     ts = int(time.time())
-    # Guard against clock skew or bad timestamps
-    now = int(time.time())
-    if ts > now + 60:
-        print(f"[oi_history] WARNING: timestamp {ts} is in the future, clamping to now")
-        ts = now
     with sqlite3.connect(DB_PATH) as conn:
+        # Skip if we already stored a snapshot in the last 10 minutes
+        recent = conn.execute(
+            "SELECT timestamp FROM oi_snapshots ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        if recent and (ts - recent[0]) < 600:
+            print(f"[oi_history] Skipping duplicate — last snapshot was {ts - recent[0]}s ago")
+            return
         conn.execute(
             "INSERT INTO oi_snapshots (timestamp, oi_usd) VALUES (?, ?)",
             (ts, oi_usd)
@@ -62,8 +64,4 @@ def get_snapshot_count() -> int:
         return conn.execute("SELECT COUNT(*) FROM oi_snapshots").fetchone()[0]
 
 
-def prune_old_snapshots(keep_days: int = 90) -> None:
-    cutoff = int(time.time()) - (keep_days * 86400)
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM oi_snapshots WHERE timestamp < ?", (cutoff,))
-        conn.commit()
+
