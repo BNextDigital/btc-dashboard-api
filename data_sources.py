@@ -145,10 +145,12 @@ def fetch_exchange_netflow() -> dict | None:
         abs_current  = abs(current_btc)
         rank         = sum(1 for v in abs_values if v <= abs_current)
         percentile   = (rank / len(abs_values)) * 100
+# In fetch_exchange_netflow(), change the return dict:
         return {
             "current_btc":    current_btc,
             "sum_7d_btc":     sum_7d_btc,
             "avg_30d_btc":    avg_30d_btc,
+            "sum_30d_btc":    sum(values[-30:]),   # ← add this
             "percentile_90d": percentile,
         }
     except (KeyError, IndexError, TypeError) as e:
