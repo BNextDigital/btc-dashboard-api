@@ -33,16 +33,18 @@ def _format_money(value: float) -> str:
 
 
 def _format_btc(value: float) -> str:
-    """Format a BTC quantity. -12_000 → '-12,000 BTC'."""
-    sign = "" if value >= 0 else "-"
+    """Format a BTC quantity with sign. -12_000 → '-12,000 BTC'."""
+    sign = "+" if value >= 0 else "-"
     abs_v = abs(value)
+    if abs_v >= 1e5:
+        return f"{sign}{abs_v / 1e3:.0f}k BTC"
     if abs_v >= 1e3:
-        return f"{sign}{abs_v / 1e3:.0f}k BTC" if abs_v >= 1e5 else f"{sign}{abs_v:,.0f} BTC"
+        return f"{sign}{abs_v:,.0f} BTC"
     return f"{sign}{abs_v:,.0f} BTC"
 
 
 def _format_pct_change(ratio: float) -> str:
-    """0.85 → '+85%', -0.17 → '-17%'."""
+    """0.85 → '+85%', -0.17 → '-17%'. Input is a ratio (not already *100)."""
     return f"{ratio * 100:+.0f}%"
 
 
@@ -79,8 +81,14 @@ def format_etf_flow(
     if not alert_level:
         alert_level = _classify_alert(alert)
 
-    # Flow card — directional signal only, no AUM
     flow_str = _format_money(current_daily) if current_daily else "—"
+
+    # vs30d: % deviation from 30d avg + nominal dollar difference
+    if avg_30d and ratio:
+        nominal_diff = last_7d_sum - avg_30d
+        vs30d_str = f"{(ratio - 1) * 100:+.0f}% ({_format_money(nominal_diff)} vs 30d avg)"
+    else:
+        vs30d_str = "—"
 
     return {
         "name":        "ETF Flow",
@@ -88,7 +96,7 @@ def format_etf_flow(
         "current":     flow_str,
         "current_dir": "up" if current_daily >= 0 else "down",
         "d7":          _format_money(last_7d_sum) if last_7d_sum else "—",
-        "vs30d":       _format_pct_change(ratio - 1) if ratio else "—",
+        "vs30d":       vs30d_str,
         "percentile":  round(percentile_90d),
         "alert":       alert,
         "alert_level": alert_level,
@@ -108,13 +116,13 @@ def format_etf_aum(
     if not aum_total:
         return None
 
-    aum_str     = f"${aum_total / 1e9:.1f}B"
-    percentile  = round(percentile_90d)
+    aum_str    = f"${aum_total / 1e9:.1f}B"
+    percentile = round(percentile_90d)
 
-    if percentile >= 90:   alert, alert_level = "AUM at 90d high", "extreme"
-    elif percentile >= 70: alert, alert_level = "Elevated AUM", "notable"
+    if percentile >= 90:   alert, alert_level = "AUM at 90d high",  "extreme"
+    elif percentile >= 70: alert, alert_level = "Elevated AUM",     "notable"
     elif percentile <= 20: alert, alert_level = "AUM near 90d low", "notable"
-    else:                  alert, alert_level = "—", "none"
+    else:                  alert, alert_level = "—",                 "none"
 
     return {
         "name":        "ETF AUM",
@@ -126,7 +134,7 @@ def format_etf_aum(
         "percentile":  percentile,
         "alert":       alert,
         "alert_level": alert_level,
-        "pattern":     f"Total AUM across IBIT, FBTC, ARKB, BITB + 4 others",
+        "pattern":     "Total AUM across IBIT, FBTC, ARKB, BITB + 4 others",
         "spark":       kwargs.get("_spark", []),
     }
 
@@ -145,6 +153,7 @@ def format_funding(
     **kwargs,
 ) -> dict:
     ratio = avg_7d / avg_30d if avg_30d else 0
+
     if percentile_90d >= 90:
         alert = "Extreme leverage"
     elif percentile_90d >= 75:
@@ -156,12 +165,15 @@ def format_funding(
 
     pattern = "Leveraged move" if percentile_90d >= 75 else "—"
 
-    # Spread label
     spread_pct = spread * 100
-    if spread_pct > 0.005:
-        spread_label = f"Wide · {spread_pct:.4f}% range"
+    spread_label = f"Wide · {spread_pct:.4f}% range" if spread_pct > 0.005 else f"Tight · {spread_pct:.4f}% range"
+
+    # vs30d: % change in avg rate + nominal rate difference
+    if avg_30d and ratio:
+        rate_diff = (avg_7d - avg_30d) * 100   # convert to % (e.g. 0.0002 → 0.02%)
+        vs30d_str = f"{(ratio - 1) * 100:+.0f}% ({rate_diff:+.4f}% rate vs 30d avg)"
     else:
-        spread_label = f"Tight · {spread_pct:.4f}% range"
+        vs30d_str = "—"
 
     return {
         "name":           "Funding",
@@ -169,7 +181,7 @@ def format_funding(
         "current":        f"{current_rate * 100:.4f}%",
         "current_dir":    "up" if current_rate >= 0 else "down",
         "d7":             f"{avg_7d * 100:.4f}% avg",
-        "vs30d":          _format_pct_change(ratio - 1),
+        "vs30d":          vs30d_str,
         "percentile":     round(percentile_90d),
         "alert":          alert,
         "alert_level":    _classify_alert(alert),
@@ -181,6 +193,8 @@ def format_funding(
         "high_exchange":  high_exchange,
         "low_exchange":   low_exchange,
     }
+
+
 # ─── OPEN INTEREST ─────────────────────────────────────────────────────────
 
 def format_open_interest(
@@ -199,13 +213,23 @@ def format_open_interest(
     else:
         alert = "—"
 
+    # vs30d: pct + nominal, but only when we have real 30d history.
+    # growth_30d_pct is 0.0 when the OI history DB has < 2880 snapshots
+    # (~30 days at 15-min intervals), so 0.0 means "no data", not "flat".
+    if growth_30d_pct != 0.0:
+        oi_30d_ago  = current_usd / (1 + growth_30d_pct)
+        nominal_chg = current_usd - oi_30d_ago
+        vs30d_str   = f"{growth_30d_pct * 100:+.1f}% ({_format_money(nominal_chg)})"
+    else:
+        vs30d_str = "accumulating history"
+
     return {
         "name":        "Open Interest",
         "category":    "Derivatives",
         "current":     _format_money(current_usd),
         "current_dir": "up" if growth_7d_pct >= 0 else "down",
         "d7":          _format_pct_change(growth_7d_pct),
-        "vs30d":       _format_pct_change(growth_30d_pct),
+        "vs30d":       vs30d_str,
         "percentile":  round(percentile_90d),
         "alert":       alert,
         "alert_level": _classify_alert(alert),
@@ -235,13 +259,20 @@ def format_exchange_netflow(
         alert   = "—"
         pattern = "—"
 
+    # vs30d: multiple of 30d avg + nominal BTC difference
+    if avg_30d_btc and ratio_30d:
+        diff_btc  = sum_7d_btc - avg_30d_btc
+        vs30d_str = f"{ratio_30d:+.1f}x 30d avg ({_format_btc(diff_btc)})"
+    else:
+        vs30d_str = "—"
+
     return {
         "name":        "Exchange Netflow",
         "category":    "On-chain",
         "current":     _format_btc(current_btc),
         "current_dir": "down" if current_btc < 0 else "up",
         "d7":          _format_btc(sum_7d_btc),
-        "vs30d":       f"{ratio_30d:+.1f}x" if ratio_30d else "—",
+        "vs30d":       vs30d_str,
         "percentile":  round(percentile_90d),
         "alert":       alert,
         "alert_level": _classify_alert(alert),
@@ -273,13 +304,17 @@ def format_volume(
     else:
         pattern = "—"
 
+    # vs30d: % above/below 30d avg + the multiple for context
+    pct_vs_30d = (ratio_30d - 1) * 100
+    vs30d_str  = f"{pct_vs_30d:+.0f}% ({ratio_30d:.1f}x 30d avg)"
+
     return {
         "name":        "Volume",
         "category":    "Flow",
         "current":     f"{ratio_30d:.1f}x 30d avg",
         "current_dir": "up",
         "d7":          f"{ratio_7d:.1f}x",
-        "vs30d":       _format_pct_change(ratio_30d - 1),
+        "vs30d":       vs30d_str,
         "percentile":  round(percentile_90d),
         "alert":       alert,
         "alert_level": _classify_alert(alert),
@@ -308,13 +343,20 @@ def format_price_move(
 
     pattern = "Breakout test" if abs_daily > 0.05 else "—"
 
+    # vs30d: today's move vs the 30d daily average, showing deviation + the avg for context
+    if avg_daily_30d:
+        deviation = daily_change_pct - avg_daily_30d
+        vs30d_str = f"{deviation * 100:+.2f}% vs {avg_daily_30d * 100:.2f}% 30d avg"
+    else:
+        vs30d_str = "—"
+
     return {
         "name":        "Price Move",
         "category":    "Price",
         "current":     f"{daily_change_pct * 100:+.1f}%",
         "current_dir": "up" if daily_change_pct >= 0 else "down",
         "d7":          f"{week_change_pct * 100:+.1f}%",
-        "vs30d":       f"{avg_daily_30d * 100:+.1f}%",
+        "vs30d":       vs30d_str,
         "percentile":  round(percentile_90d),
         "alert":       alert,
         "alert_level": _classify_alert(alert),
@@ -341,13 +383,20 @@ def format_realized_cap(
     else:
         alert = "—"
 
+    # vs30d: current growth rate vs the 30d average rate, showing the deviation
+    if avg_30d_pct:
+        deviation = growth_pct - avg_30d_pct
+        vs30d_str = f"{deviation * 100:+.2f}% vs {avg_30d_pct * 100:.2f}% 30d avg"
+    else:
+        vs30d_str = f"{growth_pct * 100:+.1f}% (no 30d avg)"
+
     return {
         "name":        "Realized Cap Growth",
         "category":    "On-chain",
         "current":     f"{growth_pct * 100:+.1f}%",
         "current_dir": "up" if growth_pct >= 0 else "down",
         "d7":          f"{growth_7d_pct * 100:+.1f}%",
-        "vs30d":       f"{avg_30d_pct * 100:+.1f}% mo avg",
+        "vs30d":       vs30d_str,
         "percentile":  round(percentile_90d),
         "alert":       alert,
         "alert_level": _classify_alert(alert),
@@ -378,13 +427,21 @@ def format_lth_supply(
         alert   = "—"
         pattern = "—"
 
+    # vs30d: pct + nominal BTC
+    if change_30d_pct:
+        vs30d_str = f"{change_30d_pct * 100:+.1f}% ({_format_btc(change_30d_btc)})"
+    elif change_30d_btc:
+        vs30d_str = _format_btc(change_30d_btc)
+    else:
+        vs30d_str = "—"
+
     return {
         "name":        "LTH Supply Change",
         "category":    "On-chain",
         "current":     _format_btc(change_7d_btc),
         "current_dir": "up" if change_7d_btc >= 0 else "down",
         "d7":          _format_btc(change_30d_btc),
-        "vs30d":       f"{change_30d_pct * 100:+.1f}%",
+        "vs30d":       vs30d_str,
         "percentile":  round(percentile_90d),
         "alert":       alert,
         "alert_level": _classify_alert(alert),
