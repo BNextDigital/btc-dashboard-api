@@ -391,7 +391,6 @@ def _poll_oi() -> None:
                 store_snapshot(total_oi)
                 count = get_snapshot_count()
                 print(f"[oi_poller] Stored OI snapshot: ${total_oi / 1e9:.1f}B — {count} total snapshots")
-                prune_old_snapshots(keep_days=90)
         except Exception as e:
             print(f"[oi_poller] Error: {e}")
         time.sleep(INTERVAL)
