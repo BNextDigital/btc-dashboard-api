@@ -55,7 +55,7 @@ from data_sources import (
 )
 from oi_history import (
     init_db, store_snapshot, get_snapshots,
-    get_snapshot_count, prune_old_snapshots,
+    get_snapshot_count
 )
 from manual_history import (
     init_db as init_history_db,
