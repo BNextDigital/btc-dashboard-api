@@ -424,10 +424,10 @@ def _fmt_ratio(ratio: float) -> str:
 
 # ── Core builder ──────────────────────────────────────────────────────────────
 
-def _build_depth_assessment(metrics_cache: dict = None) -> dict:
+def _build_depth_assessment(context: dict = None) -> dict:
     """
     Full spot depth + cascade risk assessment.
-    metrics_cache: pass in the output of _build_metrics_cached() to avoid double-fetching OI/funding.
+    context: dict from _fetch_oi_funding_context() with oi_usd, oi_alert_level, funding_alert_level.
     """
     now = time.time()
 
@@ -462,31 +462,12 @@ def _build_depth_assessment(metrics_cache: dict = None) -> dict:
     bid_20  = agg["bid_depth"]["2.0"]["usd"]
     ask_20  = agg["ask_depth"]["2.0"]["usd"]
 
-    # ── Step 4: Pull OI + funding from metrics cache (avoid re-fetching CoinGecko)
-    oi_usd             = 0.0
-    oi_alert_level     = "none"
-    funding_alert_level = "none"
-    netflow_alert      = ""
-
-    if metrics_cache:
-        oi_data      = metrics_cache.get("open_interest", {})
-        funding_data = metrics_cache.get("funding", {})
-        netflow_data = metrics_cache.get("exchange_netflow", {})
-
-        # Parse OI USD from formatted string (e.g., "$28.4B" → 28_400_000_000)
-        oi_str = oi_data.get("current", "")
-        try:
-            oi_str_clean = oi_str.replace("$", "").replace(",", "")
-            if "B" in oi_str_clean:
-                oi_usd = float(oi_str_clean.replace("B", "")) * 1e9
-            elif "M" in oi_str_clean:
-                oi_usd = float(oi_str_clean.replace("M", "")) * 1e6
-        except Exception:
-            pass
-
-        oi_alert_level      = oi_data.get("alert_level", "none")
-        funding_alert_level = funding_data.get("alert_level", "none")
-        netflow_alert       = netflow_data.get("alert", "")
+    # ── Step 4: Pull OI + funding from pre-fetched context dict
+    ctx                 = context or {}
+    oi_usd              = ctx.get("oi_usd", 0.0)
+    oi_alert_level      = ctx.get("oi_alert_level", "none")
+    funding_alert_level = ctx.get("funding_alert_level", "none")
+    netflow_alert       = ""   # not available without main.py — cascade logic still works
 
     # ── Step 5: Fetch liquidation map (CoinGlass)
     liq_map = _fetch_coinglass_liquidation_map()
@@ -595,11 +576,11 @@ def _build_depth_assessment(metrics_cache: dict = None) -> dict:
 
 # ── Cached builder ────────────────────────────────────────────────────────────
 
-def _build_assessment_cached(metrics_cache: dict = None) -> dict:
+def _build_assessment_cached(context: dict = None) -> dict:
     now = time.time()
     if _assess_cache["data"] and (now - _assess_cache["ts"]) < ASSESS_CACHE_TTL:
         return _assess_cache["data"]
-    data = _build_depth_assessment(metrics_cache)
+    data = _build_depth_assessment(context)
     _assess_cache["data"] = data
     _assess_cache["ts"]   = now
     return data
@@ -607,21 +588,74 @@ def _build_assessment_cached(metrics_cache: dict = None) -> dict:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+def _fetch_oi_funding_context() -> dict:
+    """
+    Fetch OI + funding directly from CoinGecko /derivatives.
+    Avoids circular import with main.py — this module is self-contained.
+    Returns alert levels compatible with _cascade_risk_label().
+    """
+    try:
+        cg_key = os.getenv("COINGECKO_API_KEY", "")
+        headers = {"x-cg-demo-api-key": cg_key} if cg_key else {}
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/derivatives",
+            headers=headers,
+            params={"include_tickers": "unexpired"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        btc_perps = [
+            m for m in data
+            if isinstance(m, dict)
+            and m.get("index_id", "").upper() == "BTC"
+            and m.get("contract_type") == "perpetual"
+            and m.get("open_interest") and float(m.get("open_interest", 0)) > 0
+        ]
+
+        total_oi  = sum(float(m.get("open_interest", 0)) for m in btc_perps)
+        rates     = [float(m["funding_rate"]) for m in btc_perps if m.get("funding_rate") is not None]
+        avg_fund  = sum(rates) / len(rates) if rates else 0.0
+
+        # OI alert level — mirrors formatters.py thresholds
+        # We don't have 90d history here so use absolute heuristics
+        if total_oi > 40_000_000_000:      oi_level = "extreme"
+        elif total_oi > 25_000_000_000:    oi_level = "notable"
+        else:                               oi_level = "none"
+
+        # Funding alert level — annualized: 0.01% per 8h = ~10.95% APR
+        fund_8h = avg_fund * 100  # as percentage
+        if fund_8h > 0.05:        fund_level = "extreme"
+        elif fund_8h > 0.02:      fund_level = "notable"
+        elif fund_8h < -0.02:     fund_level = "notable"
+        else:                      fund_level = "none"
+
+        return {
+            "oi_usd":             total_oi,
+            "oi_alert_level":     oi_level,
+            "funding_alert_level": fund_level,
+            "funding_rate_8h":    fund_8h,
+        }
+    except Exception as e:
+        print(f"[liquidity] CoinGecko OI/funding fetch failed: {e}")
+        return {
+            "oi_usd":              0.0,
+            "oi_alert_level":      "none",
+            "funding_alert_level": "none",
+            "funding_rate_8h":     0.0,
+        }
+
+
 @liquidity_router.get("/depth")
 def get_liquidity_depth():
     """
     Full cascade risk assessment — aggregated spot depth vs estimated liquidation exposure.
-    Pulls OI/funding context from shared metrics cache.
+    Fetches OI/funding context directly from CoinGecko (no circular import).
     Cache TTL: 60s.
     """
-    # Import here to avoid circular import — main.py defines _build_metrics_cached
-    try:
-        from main import _build_metrics_cached
-        metrics = _build_metrics_cached()
-    except ImportError:
-        metrics = None
-
-    return _build_assessment_cached(metrics)
+    context = _fetch_oi_funding_context()
+    return _build_assessment_cached(context)
 
 
 @liquidity_router.get("/orderbook")
