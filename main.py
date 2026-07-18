@@ -31,6 +31,7 @@ from shared.fred_cache import flush as _flush_fred, status as _fred_status
 from sol_routes import sol_router
 from eth_routes import eth_router
 from liquidity_depth_routes import liquidity_router
+from etf_flows_routes import etf_flows_router
 
 
 
@@ -121,6 +122,7 @@ app.include_router(leading_router)
 app.include_router(sol_router)
 app.include_router(eth_router)
 app.include_router(liquidity_router)
+app.include_router(etf_flows_router)
 
 
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
