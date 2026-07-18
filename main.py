@@ -2056,9 +2056,9 @@ def backfill_etf_flow_from_farside(force: bool = False):
     trading day into manual_history.db as etf_flow entries.
 
     Uses the same rolling-window math as fetch_etf_flow_farside():
-      - current  = daily net flow (USD M)
-      - d7       = rolling 7-day sum
-      - vs30d    = today vs 30-day average
+      - current    = daily net flow (USD M)
+      - d7         = rolling 7-day sum
+      - vs30d      = today vs 30-day average
       - percentile = 90d rolling percentile
       - raw_value  = raw daily flow (USD M)
 
@@ -2066,9 +2066,7 @@ def backfill_etf_flow_from_farside(force: bool = False):
       force=true  — re-fetches from Farside even if cache is warm
     """
     from data_sources import fetch_etf_flow_farside, _farside_cache
-    from datetime import date as date_type
 
-    # Optionally bust the cache so we get a fresh scrape
     if force:
         _farside_cache["data"]       = None
         _farside_cache["fetch_date"] = None
@@ -2077,75 +2075,79 @@ def backfill_etf_flow_from_farside(force: bool = False):
     if not farside or not farside.get("_all_history"):
         return {"error": "Farside fetch failed or returned no history"}
 
-    all_history: dict[str, float] = farside["_all_history"]  # {YYYY-MM-DD: float}
-    cutoff = "2024-04-01"  # exclude ETF launch anomaly period
+    all_history: dict[str, float] = farside["_all_history"]
+    cutoff = "2024-04-01"
 
     sorted_dates = sorted(d for d in all_history if d >= cutoff)
     if not sorted_dates:
         return {"error": "No data after cutoff date"}
 
     def _fmt_money(v: float) -> str:
-        sign = "+" if v >= 0 else "-"
+        sign  = "+" if v >= 0 else "-"
         abs_v = abs(v)
         if abs_v >= 1000:
-            return f"{sign}${abs_v/1000:.1f}B"
+            return f"{sign}${abs_v / 1000:.1f}B"
         return f"{sign}${abs_v:.0f}M"
 
     saved = []
     for i, d in enumerate(sorted_dates):
         flow = all_history[d]
 
-        # Rolling 7d sum (trading days, not calendar)
         window_7d  = [all_history[sorted_dates[j]] for j in range(max(0, i - 6),  i + 1)]
-        # Rolling 30d avg
         window_30d = [all_history[sorted_dates[j]] for j in range(max(0, i - 29), i + 1)]
-        # Rolling 90d percentile
         window_90d = [all_history[sorted_dates[j]] for j in range(max(0, i - 89), i + 1)]
 
         sum_7d  = sum(window_7d)
         sum_30d = sum(window_30d)
-        avg_30d = sum(window_30d) / len(window_30d)
-        rank    = sum(1 for v in window_90d if v <= flow)
-        pct     = round(rank / len(window_90d) * 100)
+        avg_30d = sum_30d / len(window_30d)
+
+        rank = sum(1 for v in window_90d if v <= flow)
+        pct  = round(rank / len(window_90d) * 100)
 
         ratio = sum_7d / (avg_30d * 7) if avg_30d else 0
-        if pct > 90:     alert = "Extreme inflow"
-        elif flow < -200: alert = "Significant outflow"
-        elif ratio > 2.0: alert = "Strong acceleration"
-        elif ratio > 1.5: alert = "Flow acceleration"
-        elif flow < 0:    alert = "Outflow"
-        else:             alert = "—"
+        if pct > 90:
+            alert = "Extreme inflow"
+        elif flow < -200:
+            alert = "Significant outflow"
+        elif ratio > 2.0:
+            alert = "Strong acceleration"
+        elif ratio > 1.5:
+            alert = "Flow acceleration"
+        elif flow < 0:
+            alert = "Outflow"
+        else:
+            alert = "—"
 
-        # Replace the vs30d calculation with:
-        if avg_30d and avg_30d > 0:
-            ratio = flow / avg_30d
-            vs30d_str = f"{ratio:.1f}x 30d avg" if flow >= 0 else f"Outflow · 30d avg +${avg_30d:.0f}M"
-        elif avg_30d and avg_30d < 0:
+        if avg_30d > 0:
+            vs30d_str = f"{flow / avg_30d:.1f}x 30d avg" if flow >= 0 else f"Outflow · 30d avg +${avg_30d:.0f}M"
+        elif avg_30d < 0:
             vs30d_str = f"Outflow · 30d avg -${abs(avg_30d):.0f}M"
         else:
             vs30d_str = "—"
 
-        upsert_metric(
-            metric     = "etf_flow",
-            date       = d,
-            current    = _fmt_money(flow),
-            d7         = _fmt_money(sum_7d),
-            vs30d      = vs30d_str,
-            percentile = pct,
-            alert      = alert,
-            pattern    = "Farside backfill",
-            source     = "Farside Investors",
-            sum_30d = sum(window_30d),
-            notes = f"d30:{sum_30d:.1f}",
-            raw_value  = flow,
-            raw_unit   = "USD_M",
-        )
-        saved.append(d)
+        try:
+            upsert_metric(
+                metric     = "etf_flow",
+                date       = d,
+                current    = _fmt_money(flow),
+                d7         = _fmt_money(sum_7d),
+                vs30d      = vs30d_str,
+                percentile = pct,
+                alert      = alert,
+                pattern    = "Farside backfill",
+                source     = "Farside Investors",
+                notes      = f"d30:{sum_30d:.1f}",
+                raw_value  = flow,
+                raw_unit   = "USD_M",
+            )
+            saved.append(d)
+        except Exception as e:
+            return {"error": str(e), "failed_on_date": d, "saved_so_far": len(saved)}
 
     return {
-        "status":       "ok",
-        "saved":        len(saved),
-        "date_range":   f"{sorted_dates[0]} → {sorted_dates[-1]}",
-        "first_date":   sorted_dates[0],
-        "last_date":    sorted_dates[-1],
+        "status":     "ok",
+        "saved":      len(saved),
+        "date_range": f"{sorted_dates[0]} → {sorted_dates[-1]}",
+        "first_date": sorted_dates[0],
+        "last_date":  sorted_dates[-1],
     }
