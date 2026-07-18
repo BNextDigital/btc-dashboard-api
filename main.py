@@ -2103,6 +2103,7 @@ def backfill_etf_flow_from_farside(force: bool = False):
         window_90d = [all_history[sorted_dates[j]] for j in range(max(0, i - 89), i + 1)]
 
         sum_7d  = sum(window_7d)
+        sum_30d = sum(window_30d)
         avg_30d = sum(window_30d) / len(window_30d)
         rank    = sum(1 for v in window_90d if v <= flow)
         pct     = round(rank / len(window_90d) * 100)
