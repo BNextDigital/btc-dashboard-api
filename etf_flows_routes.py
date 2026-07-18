@@ -130,17 +130,89 @@ WALLET_REGISTRY: list[dict] = [
         "active":     True,
     },
 
-    # ── BITB — Bitwise / Anchorage Digital + Coinbase Prime ──────────────────
-    {
-        "address":    "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej",
-        "etf":        "BITB",
-        "custodian":  "Anchorage Digital",
-        "label":      "BITB Anchorage Custody",
-        "grade":      "B",
-        "grade_note": "Anchorage Digital named as primary custodian in Bitwise S-1; bech32m address matches Anchorage cluster",
-        "source":     "SEC EDGAR S-1 — Bitwise, 2024-01-10 + cluster",
-        "active":     True,
-    },
+    # ── BITB — Bitwise / Anchorage Digital ───────────────────────────────────
+    # 65 addresses at confidence 1.00 — highest grade in registry.
+    # Source: on-chain attribution with full confidence; Anchorage Digital custodian.
+    # Uses multiaddr batch fetch (>= BATCH_THRESHOLD wallets).
+    *[
+        {
+            "address":    addr,
+            "etf":        "BITB",
+            "custodian":  "Anchorage Digital",
+            "label":      f"BITB Custody {i+1:02d}",
+            "grade":      "A",
+            "grade_note": "On-chain attribution confidence 1.00; Anchorage Digital named custodian in Bitwise S-1",
+            "source":     "On-chain attribution (confidence 1.00)",
+            "active":     True,
+        }
+        for i, addr in enumerate([
+            "bc1qs3njm2cnmj4s2nuk444vm9cfyxs8ktzqzsx2qh",
+            "bc1qu97pnw3arh9gslvt84r3h8rzv2q7ssaevaq5ay",
+            "bc1qwvu8wun26v6053tkkm26ktmm9fn3knu6kaxwhd",
+            "bc1q2tmq3n68784f9rd29ung4446u9p2ngqzgyuma9",
+            "bc1q0n89axqxpmc8gj5f3ya4lgq7flpwdetkycqkmt",
+            "bc1qwurc3p5tq0956skcp6wsm3hc9uap62qtjjhqpu",
+            "bc1q9sn9fqurrsf37z73kvtv8tvh8c72xxnht7fvl0",
+            "bc1qse5e2de8d928v7rne9hna7rxy67w0x0a8r5697",
+            "bc1q5re92xvrl5cuy4mhf0pfwhs60wcrg36csmvvet",
+            "bc1qkv4jg0ear9ve5ljwyqtjwyyx7xj89syuuq3h6t",
+            "bc1q526630j9hmd2la9hw8xmhrx2njmkelhn63cehf",
+            "bc1qslp29dc48hh5ssr6lm4uc7gmafm30rl33d7ur3",
+            "bc1qekdxm8eqnjrhsl0pkfnsl3r7hnpus02flfqw86",
+            "bc1q5g6z2sjs4wzcegpg5f80v2hghd4xrg4g27cafc",
+            "bc1q0x6mm7jmrg08x465cwxde4lvu60fzc4a6pq2kd",
+            "bc1qalcwea9td0gcl6e7ulmnfg7dcqhd5yhf4gr7mu",
+            "bc1qy0gk0prldtxj432call82t7hz4xpmp6m8vxty7",
+            "bc1qrfav7x4j5uppdtgch8l72mekhkrjdmnkdnxc0z",
+            "bc1qlrtwhw90rv7sgxna7qhxskdaujkaryep486fd0",
+            "bc1qmjzynwnw3wpjfwvc7anvyldxst8y0zadtj5dxv",
+            "bc1qzefarl25cwltml5dzeyc659dhsdhsk87q70qh4",
+            "bc1qvz9vg8pafrnztkkrxapshvz584jvuqkl0udav7",
+            "bc1qrmlf2x4kwn2dmmyar0fezten35djg2etpcd6mn",
+            "bc1qkxq20jqzg04ntvxx7903ezkce0aax33kc4q6zv",
+            "bc1qddctjaw0v5zac96vtvj443c4dfq66ksnu7gnpe",
+            "bc1qp3e2q36v2d369e83swxe775jw3xhtgztjdw4ev",
+            "bc1q8qmqlrhlmwf9w43azj2fachhzhs9kl04r74nt5",
+            "bc1qdhxthtw3mlwvn3vzf3x303sw3hlahnv25fuhxc",
+            "bc1qvmyretpc8aezp5xl7spz3pctx7nfyutp93vet2",
+            "bc1qdf4g0sl8gzyemmsmyc9x4tv4ue2yuwg0grs97a",
+            "bc1qgd03nxu7cv9rq3ektp80z075vjglamc06k4pvc",
+            "bc1qw33ln83tqqjka8y6md0a6znqwn6yfl0j7fzt8c",
+            "bc1qlah0v7u7nkcxlskhe0f5r4ctryzw4kftmu8gah",
+            "bc1qcpv37krhav648tqc2vcew5s0xx598hk3yzmutd",
+            "bc1qr47xza5284dd476wtvaljm66rx2jdehzmfdra5",
+            "bc1q6nuvufsgxcdugwdrvvr0h9fzgsndxe30tmmcpv",
+            "bc1qdufwk2phq57mz45dtkmyd69x3q98dz5j8wcrjt",
+            "bc1q9nutn3pd7phjc0fe597qk52h5a6m7zluvw2twe",
+            "bc1qdmalkt80m78am0mu9zsjjuf6nzjrsf87lw2jqm",
+            "bc1qur3vuejkd4m7y7589l4g4zpa0vgpvzwlz609em",
+            "bc1q8m07d3llshupfgf6r5vdsmlkke4qq3tcwu2nzp",
+            "bc1q4gkvkdx5xd4vf6vh4llxhhddxhpm4g8s20kec4",
+            "bc1q7xwvr9t6xrjzcg5pkrcylf7mlvmrtuj65kwg29",
+            "bc1q62ygc4c3tmqnkmk9j43pa22w55eq75mvl5glg6",
+            "bc1qtjfj8d7896g4njzt6pcrj6y0hud75s7ndz33v5",
+            "bc1q97gkpezgaf2xcaamdlq7wc5xn645nlmp3dv6h9",
+            "bc1qw0906urz23vc25tnd73g756u90t7taru20lpz4",
+            "bc1q4dxy47x4m8edx3skk2q9kvg3mawdjyzma20wmy",
+            "bc1q8xx4efxhpupyz73r20nha9ukxmhfzw5j7akpdj",
+            "bc1qyxenx325978f6daxr72ecu5wf854zdj6m37fx4",
+            "bc1qzx4u76hlhju0nyz4uj72j72sl2cac8jykkq329",
+            "bc1qhexw57dqc3npfk43tg5zzncn8nn4gtrg2d3mua",
+            "bc1qm80g33s2sfmuzt7a5wzg3et2qunggeakl3ngsx",
+            "bc1q7ufcwktvc2y4tj9zlt6cyjpaf3ewmvxzhruspg",
+            "bc1q46hqur0rz9c6r983wkxttevsjsgt7dhhzqsrk3",
+            "bc1qzculrus53vszftujqztm4c8lpe00sutplajkr8",
+            "bc1qqdrcrthxpz070tayd6mg6f2mgz57rm3lktyywe",
+            "bc1qv8v3nq83c5j5mg74ra8dzyezpchcamlqll9uh9",
+            "bc1qa22k86rjrvveylkluqvqcwg7smxfs3kjjalk0f",
+            "bc1q455c026szlpmmcnvjnhzz50xsvl6ddyfpyd202",
+            "bc1qldlzmssl4nlqrg8c0z3gfa8juujmqeakv072at",
+            "bc1q4yltkx4gyxquuapu0ffka67u0z0j8ydm67ts0n",
+            "bc1qm3qnm8zsgj7q0pvfxgynjsgdn9u4pgl6fm9tn5",
+            "bc1qcuk9s29mqrxjv33zfxn96vkt5x4v7jzcn9mjce",
+            "bc1q3af6awqccvjvyj5nevfctzu628z9zrhe4rcj4x",
+        ])
+    ],
 
     # ── HODL — VanEck / Gemini Custody ───────────────────────────────────────
     {
@@ -425,16 +497,54 @@ def _cached_price() -> float | None:
 
 # ── blockchain.info fetch ────────────────────────────────────────────────────
 
-def _fetch_wallet(address: str) -> dict | None:
+MULTIADDR_LIMIT = 100   # blockchain.info multiaddr cap per request
+
+def _fetch_multiaddr(addresses: list[str]) -> dict[str, dict] | None:
     """
-    Fetch address balance + recent transaction summary from blockchain.info.
-    Returns satoshi balance and recent tx inflow/outflow over ~24h.
-    Rate limit: respect ~10s between calls to avoid 429.
+    Fetch balances for up to 100 addresses in one request via blockchain.info/multiaddr.
+    Returns {address: {final_balance, n_tx, txs: []}} keyed by address.
+    Much faster than individual rawaddr calls for large wallet sets.
+    Note: multiaddr returns last 50 txs across ALL addresses combined, not per-address.
+    We use it for balance only; 24h flow falls back to zero for batch addresses.
+    """
+    if not addresses:
+        return {}
+    chunk = addresses[:MULTIADDR_LIMIT]
+    try:
+        r = requests.get(
+            f"{BLOCKCHAIN_BASE}/multiaddr",
+            params={"active": "|".join(chunk), "n": 0},  # n=0 = no tx history (balance only)
+            timeout=BLOCKCHAIN_TIMEOUT,
+            headers={"User-Agent": "btc-dashboard/1.0 (institutional-flow-monitor)"},
+        )
+        if r.status_code == 429:
+            print(f"[custody] 429 rate limit on multiaddr batch of {len(chunk)}")
+            return None
+        if not r.ok:
+            print(f"[custody] multiaddr {r.status_code} for batch of {len(chunk)}")
+            return None
+        data = r.json()
+        # Index by address
+        result = {}
+        for addr_info in data.get("addresses", []):
+            addr = addr_info.get("address")
+            if addr:
+                result[addr] = addr_info
+        return result
+    except Exception as e:
+        print(f"[custody] multiaddr fetch error: {e}")
+        return None
+
+
+def _fetch_single(address: str) -> dict | None:
+    """
+    Single-address rawaddr fetch — used for small sets where we want 24h tx flow.
+    Rate limit: call with a sleep between requests.
     """
     try:
         r = requests.get(
             f"{BLOCKCHAIN_BASE}/rawaddr/{address}",
-            params={"limit": 50},   # last 50 txs — sufficient for 24h flow
+            params={"limit": 50},
             timeout=BLOCKCHAIN_TIMEOUT,
             headers={"User-Agent": "btc-dashboard/1.0 (institutional-flow-monitor)"},
         )
@@ -450,25 +560,19 @@ def _fetch_wallet(address: str) -> dict | None:
         return None
 
 
-def _parse_wallet(raw: dict, address: str) -> dict:
-    """Extract balance + 24h inflow/outflow from blockchain.info rawaddr response."""
-    balance_sats = raw.get("final_balance", 0)
-    btc_balance  = _satoshi_to_btc(balance_sats)
-
-    # 24h flow from recent transactions
-    cutoff_ts  = int(time.time()) - 86400
-    in_24h     = 0.0
-    out_24h    = 0.0
+def _parse_single(raw: dict, address: str) -> dict:
+    """Extract balance + 24h inflow/outflow from rawaddr response."""
+    btc_balance = _satoshi_to_btc(raw.get("final_balance", 0))
+    cutoff_ts   = int(time.time()) - 86400
+    in_24h      = 0.0
+    out_24h     = 0.0
 
     for tx in raw.get("txs", []):
-        tx_time = tx.get("time", 0)
-        if tx_time < cutoff_ts:
+        if tx.get("time", 0) < cutoff_ts:
             continue
-        # Outputs to this address = inflow
         for out in tx.get("out", []):
             if out.get("addr") == address:
                 in_24h += _satoshi_to_btc(out.get("value", 0)) or 0
-        # Inputs from this address = outflow
         for inp in tx.get("inputs", []):
             prev = inp.get("prev_out", {})
             if prev.get("addr") == address:
@@ -482,64 +586,134 @@ def _parse_wallet(raw: dict, address: str) -> dict:
         "n_tx":        raw.get("n_tx", 0),
     }
 
+
+def _parse_batch(addr_info: dict) -> dict:
+    """Extract balance only from a multiaddr address entry (no per-address tx history)."""
+    btc_balance = _satoshi_to_btc(addr_info.get("final_balance", 0))
+    return {
+        "btc_balance": btc_balance,
+        "btc_24h_in":  None,   # not available from multiaddr with n=0
+        "btc_24h_out": None,
+        "btc_24h_net": None,
+        "n_tx":        addr_info.get("n_tx", 0),
+    }
+
+
 # ── Main custody fetch ────────────────────────────────────────────────────────
+
+# ETFs with many wallets use batched multiaddr (balance only, no per-address 24h flow).
+# ETFs with few wallets use individual rawaddr (balance + 24h flow).
+BATCH_THRESHOLD = 5   # >= this many wallets → use multiaddr batch
 
 def _build_custody() -> list[dict]:
     """
     Fetch all active wallets in WALLET_REGISTRY.
-    Stagger requests to respect blockchain.info rate limits.
-    Returns list of enriched wallet dicts.
+
+    Strategy:
+      - Group wallets by ETF ticker.
+      - ETFs with >= BATCH_THRESHOLD wallets: one multiaddr call per ETF (balance only).
+      - ETFs with < BATCH_THRESHOLD wallets: individual rawaddr calls (balance + 24h flow).
+      - Single sleep(10) between each network call group.
     """
-    results = []
-    spot    = _cached_price()
+    results  = []
+    spot     = _cached_price()
+    polled   = datetime.utcnow().isoformat() + "Z"
 
-    for i, wallet in enumerate(w for w in WALLET_REGISTRY if w["active"]):
-        if i > 0:
-            # Grade A/B: 10s stagger (higher signal, worth the wait)
-            # Grade C/D: 5s stagger (indicative only, keep total poll time reasonable)
-            delay = 10 if wallet.get("grade") in ("A", "B") else 5
-            time.sleep(delay)
+    # Group active wallets by ETF
+    by_etf: dict[str, list[dict]] = {}
+    for w in WALLET_REGISTRY:
+        if w["active"]:
+            by_etf.setdefault(w["etf"], []).append(w)
 
-        raw = _fetch_wallet(wallet["address"])
-        if raw is None:
-            parsed = {"btc_balance": None, "btc_24h_in": None, "btc_24h_out": None, "btc_24h_net": None, "n_tx": 0}
+    first_call = True
+
+    for etf, wallets in by_etf.items():
+        use_batch = len(wallets) >= BATCH_THRESHOLD
+
+        if use_batch:
+            # ── Batch path: one multiaddr call for all wallets in this ETF ──
+            if not first_call:
+                time.sleep(10)
+            first_call = False
+
+            addresses   = [w["address"] for w in wallets]
+            batch_result = _fetch_multiaddr(addresses)
+
+            for wallet in wallets:
+                addr = wallet["address"]
+                if batch_result and addr in batch_result:
+                    parsed = _parse_batch(batch_result[addr])
+                else:
+                    parsed = {"btc_balance": None, "btc_24h_in": None,
+                              "btc_24h_out": None, "btc_24h_net": None, "n_tx": 0}
+
+                btc = parsed["btc_balance"]
+                usd = (btc * spot) if (btc and spot) else None
+
+                entry = {
+                    **wallet,
+                    **parsed,
+                    "usd_balance":     round(usd, 0) if usd else None,
+                    "usd_balance_fmt": (f"${usd/1e9:.2f}B" if (usd and usd >= 1e9)
+                                        else (f"${usd/1e6:.0f}M" if usd else "—")),
+                    "btc_balance_fmt": f"{btc:,.1f}" if btc else "—",
+                    "btc_24h_net_fmt": "—",   # not available in batch mode
+                    "flow_direction":  "neutral",
+                    "batch_mode":      True,
+                    "last_polled":     polled,
+                }
+                results.append(entry)
+
+                try:
+                    _upsert_custody([{
+                        "address":    addr, "etf": etf,
+                        "btc_balance": btc, "btc_24h_in": None,
+                        "btc_24h_out": None, "usd_balance": usd,
+                    }])
+                except Exception as e:
+                    print(f"[custody] SQLite error {addr[:12]}: {e}")
+
         else:
-            parsed = _parse_wallet(raw, wallet["address"])
+            # ── Individual path: rawaddr per wallet, with 24h flow ──
+            for wallet in wallets:
+                if not first_call:
+                    delay = 10 if wallet.get("grade") in ("A", "B") else 5
+                    time.sleep(delay)
+                first_call = False
 
-        btc = parsed["btc_balance"]
-        usd = (btc * spot) if (btc and spot) else None
+                raw    = _fetch_single(wallet["address"])
+                parsed = (_parse_single(raw, wallet["address"]) if raw else
+                          {"btc_balance": None, "btc_24h_in": None,
+                           "btc_24h_out": None, "btc_24h_net": None, "n_tx": 0})
 
-        entry = {
-            **wallet,
-            **parsed,
-            "usd_balance": round(usd, 0) if usd else None,
-            "usd_balance_fmt": f"${usd/1e9:.2f}B" if (usd and usd >= 1e9) else (f"${usd/1e6:.0f}M" if usd else "—"),
-            "btc_balance_fmt": f"{btc:,.1f}" if btc else "—",
-            "btc_24h_net_fmt": (
-                f"{parsed['btc_24h_net']:+,.1f}" if parsed.get("btc_24h_net") is not None else "—"
-            ),
-            "flow_direction": (
-                "inflow" if (parsed.get("btc_24h_net") or 0) > 10
-                else "outflow" if (parsed.get("btc_24h_net") or 0) < -10
-                else "neutral"
-            ),
-            "last_polled": datetime.utcnow().isoformat() + "Z",
-        }
+                btc = parsed["btc_balance"]
+                usd = (btc * spot) if (btc and spot) else None
+                net = parsed.get("btc_24h_net")
 
-        results.append(entry)
+                entry = {
+                    **wallet,
+                    **parsed,
+                    "usd_balance":     round(usd, 0) if usd else None,
+                    "usd_balance_fmt": (f"${usd/1e9:.2f}B" if (usd and usd >= 1e9)
+                                        else (f"${usd/1e6:.0f}M" if usd else "—")),
+                    "btc_balance_fmt": f"{btc:,.1f}" if btc else "—",
+                    "btc_24h_net_fmt": (f"{net:+,.1f}" if net is not None else "—"),
+                    "flow_direction":  ("inflow"  if (net or 0) > 10
+                                        else "outflow" if (net or 0) < -10
+                                        else "neutral"),
+                    "batch_mode":      False,
+                    "last_polled":     polled,
+                }
+                results.append(entry)
 
-        # Persist to SQLite
-        try:
-            _upsert_custody([{
-                "address":    wallet["address"],
-                "etf":        wallet["etf"],
-                "btc_balance": btc,
-                "btc_24h_in":  parsed.get("btc_24h_in"),
-                "btc_24h_out": parsed.get("btc_24h_out"),
-                "usd_balance": usd,
-            }])
-        except Exception as e:
-            print(f"[custody] SQLite error: {e}")
+                try:
+                    _upsert_custody([{
+                        "address":    wallet["address"], "etf": etf,
+                        "btc_balance": btc, "btc_24h_in": parsed.get("btc_24h_in"),
+                        "btc_24h_out": parsed.get("btc_24h_out"), "usd_balance": usd,
+                    }])
+                except Exception as e:
+                    print(f"[custody] SQLite error {wallet['address'][:12]}: {e}")
 
     return results
 
