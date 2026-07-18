@@ -10,15 +10,20 @@ can surface a clear error rather than crashing silently.
 from __future__ import annotations
 import os
 import requests
+from bs4 import BeautifulSoup
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, date, timedelta, timezone
 from dotenv import load_dotenv
+import pytz
 
 load_dotenv()
 
 CRYPTOQUANT_KEY  = os.getenv("CRYPTOQUANT_API_KEY")
 COINGLASS_KEY    = os.getenv("COINGLASS_API_KEY")
 COINGECKO_KEY    = os.getenv("COINGECKO_API_KEY")
+FARSIDE_URL = "https://farside.co.uk/bitcoin-etf-flow-all-data/"
+_farside_cache: dict = {"data": None, "fetch_date": None}
+# fetch_date = the ET calendar date on which we last fetched after 2am
 
 CRYPTOQUANT_BASE = "https://api.cryptoquant.com/v1/btc"
 COINGLASS_BASE   = "https://open-api.coinglass.com/public/v2"
@@ -145,12 +150,11 @@ def fetch_exchange_netflow() -> dict | None:
         abs_current  = abs(current_btc)
         rank         = sum(1 for v in abs_values if v <= abs_current)
         percentile   = (rank / len(abs_values)) * 100
-# In fetch_exchange_netflow(), change the return dict:
         return {
             "current_btc":    current_btc,
             "sum_7d_btc":     sum_7d_btc,
             "avg_30d_btc":    avg_30d_btc,
-            "sum_30d_btc":    sum(values[-30:]),   # ← add this
+            "sum_30d_btc":    sum(values[-30:]),
             "percentile_90d": percentile,
         }
     except (KeyError, IndexError, TypeError) as e:
@@ -185,7 +189,7 @@ def fetch_lth_supply() -> dict | None:
         return None
 
 
-# ─── yfinance: ETF Flow ────────────────────────────────────────────────────
+# ─── yfinance: ETF Flow (legacy — superseded by fetch_etf_flow_farside) ───
 
 def fetch_etf_flow() -> dict | None:
     try:
@@ -246,7 +250,6 @@ def fetch_etf_flow() -> dict | None:
 
         flow_usd = flow_direction * 0.001  # directional proxy only — not displayed
         current_str = None  # formatter uses AUM instead
-        # Sparkline from daily AUM proxy values
         spark_vals = [assets_by_day[d] for d in sorted_days]
         etf_spark  = _normalize_sparkline(spark_vals)
 
@@ -264,6 +267,121 @@ def fetch_etf_flow() -> dict | None:
     except Exception as e:
         print(f"[data_sources] etf_flow error: {e}")
         return None
+
+
+# ─── Farside: ETF Flow ────────────────────────────────────────────────────
+
+def _parse_farside_value(s: str) -> float | None:
+    """Convert '(231.0)' → -231.0, '132.3' → 132.3, '-' → None"""
+    s = s.strip()
+    if not s or s == "-":
+        return None
+    negative = s.startswith("(") and s.endswith(")")
+    s = s.replace("(", "").replace(")", "").replace(",", "")
+    try:
+        val = float(s)
+        return -val if negative else val
+    except ValueError:
+        return None
+
+
+def _farside_cache_valid() -> bool:
+    """
+    Cache is valid if we have data and we already fetched during today's
+    2am ET window. Before 2am ET, 'today' is still yesterday's fetch.
+    """
+    if not _farside_cache["data"] or not _farside_cache["fetch_date"]:
+        return False
+    et = datetime.now(pytz.timezone("America/New_York"))
+    # Before 2am, the current valid fetch_date is yesterday
+    expected_date = et.date() if et.hour >= 2 else (et - timedelta(days=1)).date()
+    return _farside_cache["fetch_date"] == expected_date
+
+
+def fetch_etf_flow_farside() -> dict | None:
+    global _farside_cache
+
+    # Return cache if still valid
+    if _farside_cache_valid():
+        return _farside_cache["data"]
+
+    et = datetime.now(pytz.timezone("America/New_York"))
+
+    # Before 2am ET: don't fetch — return whatever stale data we have
+    if et.hour < 2:
+        return _farside_cache["data"]
+
+    # Past 2am ET and cache is stale — fetch now
+    try:
+        resp = requests.get(
+            FARSIDE_URL,
+            timeout=15,
+            headers={"User-Agent": "btc-dashboard/1.0 (internal research tool)"}
+        )
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        table = soup.find("table")
+        if not table:
+            return None
+
+        rows = table.find_all("tr")
+        flow_by_date: dict[date, float] = {}
+
+        for row in rows:
+            cells = [td.get_text(strip=True) for td in row.find_all("td")]
+            if len(cells) < 13:
+                continue
+            date_str  = cells[0]    # "17 Jul 2026"
+            total_str = cells[-1]   # "132.3" or "(231.0)"
+            total = _parse_farside_value(total_str)
+            if total is None:
+                continue
+            try:
+                dt = datetime.strptime(date_str, "%d %b %Y").date()
+                flow_by_date[dt] = total
+            except ValueError:
+                continue
+
+        if not flow_by_date:
+            return None
+
+        sorted_dates = sorted(flow_by_date.keys())
+
+        # Exclude ETF launch anomaly period (Jan–Mar 2024)
+        cutoff = date(2024, 4, 1)
+
+        today_flow = flow_by_date[sorted_dates[-1]]
+        last_7d    = [flow_by_date[d] for d in sorted_dates[-7:]]
+        last_30d   = [flow_by_date[d] for d in sorted_dates[-30:] if d >= cutoff]
+        last_90d   = [flow_by_date[d] for d in sorted_dates[-90:] if d >= cutoff]
+
+        sum_7d  = sum(last_7d)
+        avg_30d = sum(last_30d) / len(last_30d) if last_30d else 0
+
+        # 90d percentile
+        sorted_90d = sorted(last_90d)
+        rank       = sum(1 for v in sorted_90d if v <= today_flow)
+        percentile = (rank / len(sorted_90d) * 100) if sorted_90d else 50
+
+        result = {
+            "current_daily":  today_flow,
+            "last_date":      sorted_dates[-1].isoformat(),
+            "last_7d_sum":    sum_7d,
+            "avg_30d":        avg_30d,
+            "percentile_90d": percentile,
+            "source":         "Farside Investors",
+            "_spark_raw":     [flow_by_date[d] for d in sorted_dates[-30:]],
+            "_all_history":   {d.isoformat(): flow_by_date[d] for d in sorted_dates},
+        }
+
+        _farside_cache["data"]       = result
+        _farside_cache["fetch_date"] = et.date()
+        print(f"[farside] Fetched — {len(flow_by_date)} trading days, latest: {sorted_dates[-1]}")
+        return result
+
+    except Exception as e:
+        print(f"[farside] fetch error: {e}")
+        return _farside_cache["data"]  # return stale on error rather than None
 
 
 # ─── CoinGecko: shared fetch ───────────────────────────────────────────────
@@ -309,7 +427,6 @@ def fetch_price_and_volume(
         rank_price    = sum(1 for m in sorted_moves if m <= abs(daily_change))
         pctl_price    = (rank_price / len(sorted_moves)) * 100 if sorted_moves else 50
 
-        # Price sparkline from daily closes in market_chart prices
         price_spark = _normalize_sparkline([p[1] for p in chart["prices"]])
 
         price_inputs = {
@@ -330,7 +447,6 @@ def fetch_price_and_volume(
         rank_vol    = sum(1 for v in sorted_vols if v <= volumes[-1])
         pctl_vol    = (rank_vol / len(sorted_vols)) * 100 if sorted_vols else 50
 
-        # Volume sparkline from daily volumes
         vol_spark = _normalize_sparkline(volumes)
 
         volume_inputs = {
@@ -370,7 +486,6 @@ def fetch_realized_cap(chart: dict | None = None) -> dict | None:
         rank          = sum(1 for g in sorted_g if g <= growth_today)
         percentile    = (rank / len(sorted_g)) * 100 if sorted_g else 50
 
-        # Sparkline from daily market cap values
         mcap_spark = _normalize_sparkline(mcaps)
 
         return {
@@ -455,7 +570,6 @@ def fetch_open_interest(markets: list | None = None) -> dict | None:
             growth_7d_pct  = (total_oi - oi_7d_ago)  / oi_7d_ago  if oi_7d_ago  else 0
             growth_30d_pct = (total_oi - oi_30d_ago) / oi_30d_ago if oi_30d_ago else 0
 
-            # Sparkline from OI history
             oi_spark = _normalize_sparkline(oi_values[-30:] if len(oi_values) >= 30 else oi_values)
             print(f"[oi] Using REAL history — {snap_count} snapshots, pctl={percentile:.0f}")
         else:
@@ -509,7 +623,6 @@ def fetch_funding(markets: list | None = None) -> dict | None:
         weighted_sum = sum(m["funding_rate"] * m["open_interest"] for m in valid)
         current_rate = (weighted_sum / total_oi) / 100 if total_oi else 0
 
-        # Individual exchange rates for spread display
         exchange_rates = {
             m["market"].replace(" (Futures)", "").replace(" Futures", ""):
             round(m["funding_rate"] / 100 * 100, 4)  # as % per 8h
@@ -537,6 +650,8 @@ def fetch_funding(markets: list | None = None) -> dict | None:
     except (KeyError, TypeError, ZeroDivisionError) as e:
         print(f"[data_sources] funding parse error: {e}")
         return None
+
+
 # ─── News aggregation (CoinGecko + CoinDesk RSS + Cointelegraph RSS) ───────
 
 def _fetch_rss(url: str) -> list[dict]:
@@ -567,7 +682,6 @@ def _fetch_rss(url: str) -> list[dict]:
             description = (item.findtext("description") or "").strip()
             pub_date    = item.findtext("pubDate", "")
 
-            # Parse publish date to Unix timestamp
             try:
                 ts = int(parsedate_to_datetime(pub_date).timestamp())
             except Exception:
@@ -678,7 +792,6 @@ def fetch_btc_news() -> list | None:
     ]
 
     # ── Deduplicate by title similarity ───────────────────────────
-    # Simple approach: if two titles share 5+ consecutive words, drop the older one
     seen_words: list[set] = []
     deduped = []
     for item in relevant:
