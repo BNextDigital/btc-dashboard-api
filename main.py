@@ -965,7 +965,18 @@ def _apply_overrides(metrics: dict) -> dict:
 
 # ─── Shared metric builder ─────────────────────────────────────────────────
 def _history_to_metric(metric: str, history: dict) -> dict:
-    """Wrap a history row into a metric dict shape, skipping the formatter."""
+    # Parse d30 sum out of notes field if present
+    notes = history.get("notes", "")
+    d30 = None
+    if notes and notes.startswith("d30:"):
+        try:
+            d30_raw = float(notes.split("d30:")[1].split(",")[0])
+            sign = "+" if d30_raw >= 0 else "-"
+            abs_v = abs(d30_raw)
+            d30 = f"{sign}${abs_v/1000:.1f}B" if abs_v >= 1000 else f"{sign}${abs_v:.0f}M"
+        except (ValueError, IndexError):
+            pass
+
     return {
         "name":                 _metric_display_name(metric),
         "category":             _metric_category(metric),
@@ -973,6 +984,7 @@ def _history_to_metric(metric: str, history: dict) -> dict:
         "current_dir":          _infer_direction(history.get("current", "")),
         "d7":                   history.get("d7", "—"),
         "vs30d":                history.get("vs30d", "—"),
+        "d30":                  d30,                          # ← new
         "percentile":           history.get("percentile", 0),
         "alert":                history.get("alert", "—"),
         "alert_level":          _classify_alert_level(history.get("alert", "—")),
@@ -2122,7 +2134,8 @@ def backfill_etf_flow_from_farside(force: bool = False):
             alert      = alert,
             pattern    = "Farside backfill",
             source     = "Farside Investors",
-            notes      = "",
+            sum_30d = sum(window_30d),
+            notes = f"d30:{sum_30d:.1f}",
             raw_value  = flow,
             raw_unit   = "USD_M",
         )
