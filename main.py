@@ -2103,8 +2103,14 @@ def backfill_etf_flow_from_farside(force: bool = False):
         elif flow < 0:    alert = "Outflow"
         else:             alert = "—"
 
-        vs30d_pct = ((flow - avg_30d) / abs(avg_30d) * 100) if avg_30d else 0
-        vs30d_str = f"{vs30d_pct:+.0f}% vs 30d avg"
+        # Replace the vs30d calculation with:
+        if avg_30d and avg_30d > 0:
+            ratio = flow / avg_30d
+            vs30d_str = f"{ratio:.1f}x 30d avg" if flow >= 0 else f"Outflow · 30d avg +${avg_30d:.0f}M"
+        elif avg_30d and avg_30d < 0:
+            vs30d_str = f"Outflow · 30d avg -${abs(avg_30d):.0f}M"
+        else:
+            vs30d_str = "—"
 
         upsert_metric(
             metric     = "etf_flow",
