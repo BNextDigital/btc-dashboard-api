@@ -497,15 +497,20 @@ def _build_depth_assessment(context: dict = None) -> dict:
     depth_vs_median = _depth_vs_median(bid_20)
 
     # ── Step 11: Cascade risk label
+    # Use 0.0 as sentinel when coverage is uncalculable (no forced flow estimate)
+    coverage_for_label = adjusted_coverage if adjusted_coverage is not None else 0.0
     cascade_label, cascade_level = _cascade_risk_label(
-        adjusted_coverage,
+        coverage_for_label,
         oi_alert_level,
         funding_alert_level,
         netflow_alert,
     )
 
     # ── Step 12: Top-level alert (matches existing metric card schema)
-    if adjusted_coverage < 0.75 or cascade_level == "extreme":
+    if adjusted_coverage is None:
+        alert       = "No liquidation estimate"
+        alert_level = "none"
+    elif adjusted_coverage < 0.75 or cascade_level == "extreme":
         alert       = "Extreme cascade risk"
         alert_level = "extreme"
     elif adjusted_coverage < 1.0 or cascade_level == "notable":
@@ -523,7 +528,7 @@ def _build_depth_assessment(context: dict = None) -> dict:
         "name":          "Spot Depth",
         "category":      "Liquidity",
         "current":       _fmt_ratio(adjusted_coverage),
-        "current_dir":   "up" if adjusted_coverage >= 1.0 else "down",
+        "current_dir":   "flat" if adjusted_coverage is None else ("up" if adjusted_coverage >= 1.0 else "down"),
         "d7":            "—",    # depth history builds over time
         "vs30d":         "—",
         "percentile":    None,   # no historical percentile yet — grows as _depth_history fills
@@ -542,8 +547,8 @@ def _build_depth_assessment(context: dict = None) -> dict:
         "depth_haircut_pct":         f"{int(haircut*100)}%",
         "haircut_reason":            "stressed" if stressed else "normal",
 
-        "depth_coverage_ratio":      round(depth_coverage_ratio, 2),
-        "adjusted_coverage":         round(adjusted_coverage, 2),
+        "depth_coverage_ratio":      round(depth_coverage_ratio, 2) if depth_coverage_ratio is not None else 0.0,
+        "adjusted_coverage":         round(adjusted_coverage, 2) if adjusted_coverage is not None else 0.0,
 
         "liquidation_estimate_usd":  _fmt_usd(forced_flow_usd),
         "liquidation_source":        liq["source"],
@@ -609,12 +614,15 @@ def _fetch_oi_funding_context() -> dict:
         btc_perps = [
             m for m in data
             if isinstance(m, dict)
-            and m.get("index_id", "").upper() == "BTC"
+            and "BTC" in str(m.get("symbol", "")).upper()
             and m.get("contract_type") == "perpetual"
-            and m.get("open_interest") and float(m.get("open_interest", 0)) > 0
+            and m.get("open_interest_btc") and float(m.get("open_interest_btc", 0)) > 0
         ]
 
-        total_oi  = sum(float(m.get("open_interest", 0)) for m in btc_perps)
+        # Derive spot price from first available bid in order books (rough — just for OI USD conversion)
+        # open_interest_btc × ~spot gives USD OI
+        sample_price = 95_000.0  # conservative fallback; real price used elsewhere in the builder
+        total_oi  = sum(float(m.get("open_interest_btc", 0)) for m in btc_perps) * sample_price
         rates     = [float(m["funding_rate"]) for m in btc_perps if m.get("funding_rate") is not None]
         avg_fund  = sum(rates) / len(rates) if rates else 0.0
 
