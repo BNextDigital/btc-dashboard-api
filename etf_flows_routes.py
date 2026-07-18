@@ -350,20 +350,67 @@ WALLET_REGISTRY: list[dict] = [
         "source":     "SEC EDGAR S-1 — WisdomTree, 2024-01-10 + cluster",
         "active":     True,
     },
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # OTC / PRIME BROKER SETTLEMENT ADDRESSES
+    # ══════════════════════════════════════════════════════════════════════════
+    # These are deposit/settlement addresses, not long-term cold storage.
+    # Standing balance may be near zero — funds move through quickly.
+    # The signal here is 24h FLOW (in/out), not held balance.
+    # Interpretation:
+    #   Inflow  → assets being staged for OTC sale, custody transfer, or client delivery
+    #   Outflow → settlement complete, inventory deployed, or client withdrawal
+    # Do NOT interpret zero balance as bearish — it means funds are in transit.
+
+    # ── Coinbase Prime ────────────────────────────────────────────────────────
+    # Verified via US Government Silk Road BTC transfer (Dec 2024):
+    # DOJ sent $100 test transaction to this address before transferring 10,000 BTC.
+    # Arkham research article documents the full tx chain.
+    {
+        "address":    "33TgpoSWfcUYJLt1jUyDR1hy64jcy3BShW",
+        "etf":        "COINBASE_PRIME",
+        "custodian":  "Coinbase Prime",
+        "label":      "Coinbase Prime Deposit",
+        "grade":      "B",
+        "grade_note": "Verified via US Government Silk Road BTC transfer (Dec 2024) — DOJ sent $100 test tx then 10,000 BTC to this address. Arkham-attributed.",
+        "source":     "Arkham Intelligence — US Government Moving $2B BTC (Dec 2024)",
+        "active":     True,
+    },
+
+    # ── Galaxy Digital ────────────────────────────────────────────────────────
+    # Transaction-linked: Arkham article on legacy whale wallets (2025) linked
+    # an 80,000+ BTC holder cashing out through Galaxy Digital to this address.
+    {
+        "address":    "bc1qs4nzm0je7wqfyfmqr4ht4upyzy57vc95nf4au0",
+        "etf":        "GALAXY_DIGITAL",
+        "custodian":  "Galaxy Digital",
+        "label":      "Galaxy Digital OTC Settlement",
+        "grade":      "C",
+        "grade_note": "Transaction-linked seed address: Arkham article documents 80,000+ BTC legacy whale cashing out via Galaxy Digital to this address. Not a direct filing reference.",
+        "source":     "Arkham Intelligence — BTC Legacy Whales Moving (2025)",
+        "active":     True,
+    },
 ]
 
 # ETF metadata (type + full name)
+# type: "ETF" | "Trust" | "OTC" — used by frontend to group sections
 ETF_META: dict[str, dict] = {
-    "IBIT": {"name": "iShares Bitcoin Trust",         "type": "ETF",   "issuer": "BlackRock"},
-    "FBTC": {"name": "Fidelity Wise Origin Bitcoin Fund", "type": "ETF", "issuer": "Fidelity"},
-    "ARKB": {"name": "ARK 21Shares Bitcoin ETF",       "type": "ETF",   "issuer": "ARK / 21Shares"},
-    "BITB": {"name": "Bitwise Bitcoin ETF",             "type": "ETF",   "issuer": "Bitwise"},
-    "HODL": {"name": "VanEck Bitcoin ETF",              "type": "ETF",   "issuer": "VanEck"},
-    "BTCO": {"name": "Invesco Galaxy Bitcoin ETF",      "type": "ETF",   "issuer": "Invesco Galaxy"},
-    "EZBC": {"name": "Franklin Bitcoin ETF",            "type": "ETF",   "issuer": "Franklin"},
-    "BRRR": {"name": "Valkyrie Bitcoin Fund",           "type": "ETF",   "issuer": "Valkyrie"},
-    "GBTC": {"name": "Grayscale Bitcoin Trust",         "type": "Trust", "issuer": "Grayscale"},
-    "BTCW": {"name": "WisdomTree Bitcoin Fund",         "type": "Trust", "issuer": "WisdomTree"},
+    # Spot ETFs
+    "IBIT": {"name": "iShares Bitcoin Trust",             "type": "ETF",   "issuer": "BlackRock"},
+    "FBTC": {"name": "Fidelity Wise Origin Bitcoin Fund", "type": "ETF",   "issuer": "Fidelity"},
+    "ARKB": {"name": "ARK 21Shares Bitcoin ETF",          "type": "ETF",   "issuer": "ARK / 21Shares"},
+    "BITB": {"name": "Bitwise Bitcoin ETF",               "type": "ETF",   "issuer": "Bitwise"},
+    "HODL": {"name": "VanEck Bitcoin ETF",                "type": "ETF",   "issuer": "VanEck"},
+    "BTCO": {"name": "Invesco Galaxy Bitcoin ETF",        "type": "ETF",   "issuer": "Invesco Galaxy"},
+    "EZBC": {"name": "Franklin Bitcoin ETF",              "type": "ETF",   "issuer": "Franklin"},
+    "BRRR": {"name": "Valkyrie Bitcoin Fund",             "type": "ETF",   "issuer": "Valkyrie"},
+    # Trusts
+    "GBTC": {"name": "Grayscale Bitcoin Trust",           "type": "Trust", "issuer": "Grayscale"},
+    "BTCW": {"name": "WisdomTree Bitcoin Fund",           "type": "Trust", "issuer": "WisdomTree"},
+    # OTC / Prime Broker settlement addresses
+    # Balance signal: FLOW (24h in/out) is primary. Standing balance near zero is normal.
+    "COINBASE_PRIME":  {"name": "Coinbase Prime",   "type": "OTC", "issuer": "Coinbase"},
+    "GALAXY_DIGITAL":  {"name": "Galaxy Digital",   "type": "OTC", "issuer": "Galaxy Digital"},
 }
 
 # ── SQLite ────────────────────────────────────────────────────────────────────
@@ -900,42 +947,66 @@ def get_breakdown():
 def get_summary():
     """
     State bar for the /etf-flows page header.
-    Total on-chain BTC (Grade A/B), aggregate 24h flow, dominant flow direction.
+    Splits ETF/Trust custody rows from OTC/prime broker rows — different signal types.
+
+    custody_*  — ETF + Trust rows: balance is the signal (long-term holdings)
+    otc_*      — OTC rows: 24h flow is the signal (deposit/settlement addresses)
     """
     bd   = get_breakdown()
     rows = bd["rows"]
 
-    ab_rows = [r for r in rows if r["grade"] in ("A", "B") and r["btc_onchain"]]
-    cd_rows = [r for r in rows if r["grade"] in ("C", "D") and r["btc_onchain"]]
+    # Split by entity type
+    custody_rows = [r for r in rows if r["type"] in ("ETF", "Trust")]
+    otc_rows     = [r for r in rows if r["type"] == "OTC"]
 
-    total_btc = bd["total_btc_onchain"]
-    ab_btc    = bd["grade_ab_btc"]
-    net_24h   = bd["total_24h_net"]
+    # Custody totals (ETF + Trust)
+    custody_btc   = sum(r["btc_onchain"] for r in custody_rows if r["btc_onchain"])
+    custody_ab    = sum(r["btc_onchain"] for r in custody_rows
+                        if r["grade"] in ("A", "B") and r["btc_onchain"])
+    custody_net   = sum(r["btc_24h_net"] for r in custody_rows if r["btc_24h_net"])
 
-    # Inflow vs outflow ETF count
-    inflow_count  = sum(1 for r in rows if r["flow_direction"] == "inflow")
-    outflow_count = sum(1 for r in rows if r["flow_direction"] == "outflow")
-    neutral_count = sum(1 for r in rows if r["flow_direction"] == "neutral")
+    # OTC totals — 24h flow is the primary signal, not balance
+    otc_net_in    = sum(r["btc_24h_net"] for r in otc_rows
+                        if r["btc_24h_net"] and r["btc_24h_net"] > 0)
+    otc_net_out   = sum(r["btc_24h_net"] for r in otc_rows
+                        if r["btc_24h_net"] and r["btc_24h_net"] < 0)
+    otc_net_total = sum(r["btc_24h_net"] for r in otc_rows if r["btc_24h_net"])
 
-    _, alert_level = _flow_alert(net_24h)
+    _, custody_alert = _flow_alert(custody_net)
+    _, otc_alert     = _flow_alert(otc_net_total)
 
     return {
-        "updated_at":       datetime.utcnow().isoformat() + "Z",
-        "total_btc_onchain": total_btc,
-        "total_btc_fmt":    bd["total_btc_onchain_fmt"],
-        "grade_ab_btc":     ab_btc,
-        "grade_ab_btc_fmt": bd["grade_ab_btc_fmt"],
-        "net_24h_btc":      net_24h,
-        "net_24h_fmt":      bd["total_24h_net_fmt"],
-        "alert_level":      alert_level,
-        "inflow_count":     inflow_count,
-        "outflow_count":    outflow_count,
-        "neutral_count":    neutral_count,
-        "etf_count":        len([r for r in rows if r["type"] == "ETF"]),
-        "trust_count":      len([r for r in rows if r["type"] == "Trust"]),
-        "grade_ab_count":   len(ab_rows),
-        "grade_cd_count":   len(cd_rows),
-        "spot_price":       bd["spot_price"],
+        "updated_at":           datetime.utcnow().isoformat() + "Z",
+        "spot_price":           bd["spot_price"],
+        "spot_price_fmt":       bd["spot_price_fmt"],
+
+        # ETF + Trust custody layer
+        "custody_btc":          round(custody_btc, 0),
+        "custody_btc_fmt":      f"{custody_btc:,.0f} BTC",
+        "custody_ab_btc":       round(custody_ab, 0),
+        "custody_ab_btc_fmt":   f"{custody_ab:,.0f} BTC",
+        "custody_net_24h":      round(custody_net, 0),
+        "custody_net_24h_fmt":  f"{custody_net:+,.0f} BTC",
+        "custody_alert":        custody_alert,
+        "etf_count":            len([r for r in custody_rows if r["type"] == "ETF"]),
+        "trust_count":          len([r for r in custody_rows if r["type"] == "Trust"]),
+        "custody_inflow_count": sum(1 for r in custody_rows if r["flow_direction"] == "inflow"),
+        "custody_outflow_count":sum(1 for r in custody_rows if r["flow_direction"] == "outflow"),
+
+        # OTC / prime broker layer
+        "otc_count":            len(otc_rows),
+        "otc_net_24h":          round(otc_net_total, 0),
+        "otc_net_24h_fmt":      f"{otc_net_total:+,.0f} BTC",
+        "otc_inflow_24h":       round(otc_net_in, 0),
+        "otc_inflow_24h_fmt":   f"+{otc_net_in:,.0f} BTC",
+        "otc_outflow_24h":      round(abs(otc_net_out), 0),
+        "otc_outflow_24h_fmt":  f"-{abs(otc_net_out):,.0f} BTC",
+        "otc_alert":            otc_alert,
+        "otc_note":             "Balance near zero is normal — signal is 24h flow, not held balance.",
+
+        # Grade quality
+        "grade_ab_count":       len([r for r in rows if r["grade"] in ("A", "B") and r["btc_onchain"]]),
+        "grade_cd_count":       len([r for r in rows if r["grade"] in ("C", "D") and r["btc_onchain"]]),
     }
 
 
