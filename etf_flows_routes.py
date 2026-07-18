@@ -191,26 +191,79 @@ WALLET_REGISTRY: list[dict] = [
     },
 
     # ── GBTC — Grayscale Bitcoin Trust / Coinbase Custody ────────────────────
-    # GBTC is a Trust, not an ETF. Largest single institutional BTC holder.
+    # GBTC is a Trust, not an ETF. One of the largest single institutional BTC holders.
     # Coinbase Custody has been custodian since 2018.
+    # Addresses: Arkham-attributed, reported by Bitcoin Insider and cross-referenced
+    # against known Grayscale Trust wallet cluster activity.
+    # Legacy P2PKH format (1xxx) consistent with Coinbase Custody cold storage era.
     {
-        "address":    "bc1qazcm763858nkj2dj986etajv6wquslv8uxjycy",
+        "address":    "16vd2YfcGK9mw3GZXzL5o23m7gdBGXKHNz",
         "etf":        "GBTC",
         "custodian":  "Coinbase Custody",
-        "label":      "GBTC Primary Cold Storage",
-        "grade":      "A",
-        "grade_note": "Grayscale publicly disclosed Coinbase Custody as custodian; primary cold wallet address verified via multiple independent on-chain analytics sources",
-        "source":     "Grayscale public disclosure + on-chain verification",
+        "label":      "GBTC Cold Storage A",
+        "grade":      "B",
+        "grade_note": "Arkham-attributed, reported by Bitcoin Insider; cross-referenced against Grayscale Trust cluster. Coinbase Custody confirmed custodian since 2018.",
+        "source":     "Arkham Intelligence + Bitcoin Insider report",
         "active":     True,
     },
     {
-        "address":    "bc1qd2qlptzr8y68nxx95h62l3n9rmf2ynz5mnxaau",
+        "address":    "1GRGfd3TtBA2vMjoHH3hVpE6CRx5nZ1YJp",
         "etf":        "GBTC",
         "custodian":  "Coinbase Custody",
-        "label":      "GBTC Secondary Cold Storage",
+        "label":      "GBTC Cold Storage B",
         "grade":      "B",
-        "grade_note": "Secondary wallet within Coinbase Custody cluster associated with GBTC; not directly filed",
-        "source":     "On-chain cluster attribution",
+        "grade_note": "Arkham-attributed, reported by Bitcoin Insider; cross-referenced against Grayscale Trust cluster.",
+        "source":     "Arkham Intelligence + Bitcoin Insider report",
+        "active":     True,
+    },
+    {
+        "address":    "15gioFeKnUjerTQ9LYNreW3Bt9kn9xrTU4",
+        "etf":        "GBTC",
+        "custodian":  "Coinbase Custody",
+        "label":      "GBTC Cold Storage C",
+        "grade":      "B",
+        "grade_note": "Arkham-attributed, reported by Bitcoin Insider; cross-referenced against Grayscale Trust cluster.",
+        "source":     "Arkham Intelligence + Bitcoin Insider report",
+        "active":     True,
+    },
+    {
+        "address":    "1DtdMtJL2zggkoFPDbEbM2Ja1EYH8LeH9B",
+        "etf":        "GBTC",
+        "custodian":  "Coinbase Custody",
+        "label":      "GBTC Cold Storage D (historical)",
+        "grade":      "C",
+        "grade_note": "Arkham-attributed; may be historical/rotated address. Lower confidence — treat as indicative only.",
+        "source":     "Arkham Intelligence + Bitcoin Insider report",
+        "active":     True,
+    },
+    {
+        "address":    "1CU9gusmCCfCjsmGatxbzvXLqoisgnaV9n",
+        "etf":        "GBTC",
+        "custodian":  "Coinbase Custody",
+        "label":      "GBTC Cold Storage E (historical)",
+        "grade":      "C",
+        "grade_note": "Arkham-attributed; may be historical/rotated address. Lower confidence — treat as indicative only.",
+        "source":     "Arkham Intelligence + Bitcoin Insider report",
+        "active":     True,
+    },
+    {
+        "address":    "1L8k2SD9sdTTzdDxA19QdobLbUyKyV2RVi",
+        "etf":        "GBTC",
+        "custodian":  "Coinbase Custody",
+        "label":      "GBTC Cold Storage F",
+        "grade":      "C",
+        "grade_note": "Mentioned as transacting with other confirmed Grayscale Trust addresses; not independently verified.",
+        "source":     "On-chain cluster — transactional linkage",
+        "active":     True,
+    },
+    {
+        "address":    "1CS1M4oVbcFnZjZ5hU5bk6vLi2Q5VSsmpX",
+        "etf":        "GBTC",
+        "custodian":  "Coinbase Custody",
+        "label":      "GBTC Cold Storage G",
+        "grade":      "C",
+        "grade_note": "Mentioned as transacting with other confirmed Grayscale Trust addresses; not independently verified.",
+        "source":     "On-chain cluster — transactional linkage",
         "active":     True,
     },
 
@@ -442,7 +495,10 @@ def _build_custody() -> list[dict]:
 
     for i, wallet in enumerate(w for w in WALLET_REGISTRY if w["active"]):
         if i > 0:
-            time.sleep(10)   # 10s between requests — blockchain.info free tier
+            # Grade A/B: 10s stagger (higher signal, worth the wait)
+            # Grade C/D: 5s stagger (indicative only, keep total poll time reasonable)
+            delay = 10 if wallet.get("grade") in ("A", "B") else 5
+            time.sleep(delay)
 
         raw = _fetch_wallet(wallet["address"])
         if raw is None:
