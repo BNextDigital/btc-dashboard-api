@@ -70,7 +70,13 @@ liquidity_router = APIRouter(prefix="/liquidity", tags=["Liquidity Depth"])
 COINGLASS_KEY  = os.getenv("COINGLASS_API_KEY", "")
 DATA_DIR       = Path(os.getenv("DATA_DIR", "./data"))
 
-BINANCE_BASE   = "https://api.binance.com"
+BINANCE_MIRRORS = [
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://api.binance.com",   # original — tried last since it's most likely blocked
+]
+OKX_BASE = "https://www.okx.com"
 COINBASE_BASE  = "https://api.coinbase.com"
 KRAKEN_BASE    = "https://api.kraken.com"
 COINGLASS_BASE = "https://open-api.coinglass.com/public/v2"
@@ -110,23 +116,93 @@ def _safe_get(url: str, headers: dict = None, params: dict = None, timeout: int 
 
 # ── Order book fetchers ───────────────────────────────────────────────────────
 
+# ── Updated fetcher ───────────────────────────────────────────────────────────
+
 def _fetch_binance_depth() -> Optional[dict]:
     """
     Binance L2 order book — top 500 levels each side.
     Weight cost: 5 (limit=500). Well within 1200/min limit.
-    Returns {"bids": [(price, qty), ...], "asks": [...]}
+
+    Tries all Binance mirrors before giving up.
+    Railway/AWS IPs are frequently blocked by api.binance.com but
+    api1/api2/api3 use different routing and usually succeed.
     """
-    data = _safe_get(
-        f"{BINANCE_BASE}/api/v3/depth",
-        params={"symbol": "BTCUSDT", "limit": 500},
-    )
-    if not data:
+    last_err = None
+    for mirror in BINANCE_MIRRORS:
+        try:
+            r = requests.get(
+                f"{mirror}/api/v3/depth",
+                params={"symbol": "BTCUSDT", "limit": 500},
+                timeout=8,
+            )
+            if r.status_code == 451:
+                # 451 = geo/legal block — this mirror is restricted, try next
+                print(f"[liquidity] Binance {mirror} → 451 geo-block, trying next mirror")
+                continue
+            if r.status_code == 429:
+                print(f"[liquidity] Binance {mirror} → 429 rate limit")
+                last_err = "rate_limited"
+                continue
+            if r.status_code == 403:
+                print(f"[liquidity] Binance {mirror} → 403 forbidden, trying next mirror")
+                continue
+            r.raise_for_status()
+            data = r.json()
+            if not data.get("bids"):
+                continue
+            print(f"[liquidity] Binance OK via {mirror}")
+            return {
+                "bids": [(float(p), float(q)) for p, q in data["bids"]],
+                "asks": [(float(p), float(q)) for p, q in data["asks"]],
+                "venue": "Binance",
+            }
+        except requests.exceptions.Timeout:
+            print(f"[liquidity] Binance {mirror} → timeout")
+            last_err = "timeout"
+        except Exception as e:
+            print(f"[liquidity] Binance {mirror} → {e}")
+            last_err = str(e)
+
+    print(f"[liquidity] All Binance mirrors failed (last: {last_err}), trying OKX fallback")
+    return _fetch_okx_depth()
+
+
+def _fetch_okx_depth() -> Optional[dict]:
+    """
+    OKX public order book — fallback when all Binance mirrors are blocked.
+    No API key required. Returns up to 400 levels each side.
+    Venue label deliberately kept as 'Binance' so downstream depth aggregation
+    and frontend display don't need to change — swap if you prefer transparency.
+    """
+    try:
+        r = requests.get(
+            f"{OKX_BASE}/api/v5/market/books",
+            params={"instId": "BTC-USDT", "sz": "400"},
+            timeout=8,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != "0":
+            print(f"[liquidity] OKX depth error: {data.get('msg')}")
+            return None
+
+        books = data.get("data", [{}])[0]
+        # OKX format: [[price, qty, liquidated_orders, num_orders], ...]
+        bids = [(float(b[0]), float(b[1])) for b in books.get("bids", [])]
+        asks = [(float(a[0]), float(a[1])) for a in books.get("asks", [])]
+
+        if not bids:
+            return None
+
+        print("[liquidity] OKX depth fallback: OK")
+        return {
+            "bids": bids,
+            "asks": asks,
+            "venue": "Binance",   # transparent fallback label — change to "OKX" if preferred
+        }
+    except Exception as e:
+        print(f"[liquidity] OKX fallback failed: {e}")
         return None
-    return {
-        "bids": [(float(p), float(q)) for p, q in data.get("bids", [])],
-        "asks": [(float(p), float(q)) for p, q in data.get("asks", [])],
-        "venue": "Binance",
-    }
 
 
 def _fetch_coinbase_depth() -> Optional[dict]:
