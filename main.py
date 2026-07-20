@@ -15,7 +15,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from macro_routes import macro_router
 from contextlib import asynccontextmanager
-from liquidity_routes import liquidity_router
 from forex_routes import forex_router
 from growth_inflation_routes import growth_router
 # Replace the old import:
@@ -30,8 +29,9 @@ from shared.yf_cache  import warm_cache as _warm_yf
 from shared.fred_cache import flush as _flush_fred, status as _fred_status
 from sol_routes import sol_router
 from eth_routes import eth_router
-from liquidity_depth_routes import liquidity_router
 from etf_flows_routes import etf_flows_router
+from liquidity_routes import liquidity_router as dollar_liquidity_router
+from liquidity_depth_routes import liquidity_router as depth_liquidity_router
 
 
 
@@ -113,7 +113,6 @@ app.add_middleware(
 app.include_router(macro_router)
 app.include_router(sector_flows_router)
 app.include_router(equity_router)
-app.include_router(liquidity_router)
 app.include_router(forex_router)
 app.include_router(growth_router)
 app.include_router(commodity_router) 
@@ -121,8 +120,11 @@ app.include_router(etf_aum_router)# new
 app.include_router(leading_router)
 app.include_router(sol_router)
 app.include_router(eth_router)
-app.include_router(liquidity_router)
 app.include_router(etf_flows_router)
+# Then register both:
+app.include_router(dollar_liquidity_router)   # /liquidity/metrics, /liquidity/yield-curve, etc.
+app.include_router(depth_liquidity_router)    # /liquidity/depth, /liquidity/orderbook, etc.
+
 
 
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
