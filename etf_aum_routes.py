@@ -145,9 +145,9 @@ def _fetch_aum() -> dict:
     history_by_ticker: dict[str, list[float]] = {}
 
     try:
-        # Bulk download 90 days of price history
+        # Bulk download 5 days of price history
         raw = yf.download(
-            tickers, period="90d",
+            tickers, period="5d",
             auto_adjust=True, progress=False, threads=True
         )
         close = raw["Close"] if "Close" in raw.columns else raw
@@ -336,12 +336,3 @@ def flush_etf_aum_cache():
     global _cache
     _cache = {"data": None, "ts": 0.0}
     return {"flushed": True}
-
-# ── Registration ──────────────────────────────────────────────────────────────
-#
-#   from etf_aum_routes import etf_aum_router
-#   app.include_router(etf_aum_router)
-#
-# Endpoints:
-#   GET /etf-aum/metrics
-#   GET /etf-aum/cache/flush
