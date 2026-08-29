@@ -32,7 +32,7 @@ from eth_routes import eth_router
 from etf_flows_routes import etf_flows_router
 from liquidity_routes import liquidity_router as dollar_liquidity_router
 from liquidity_depth_routes import liquidity_router as depth_liquidity_router
-
+from memory_debug_routes import memory_debug_router
 
 
 
@@ -124,7 +124,7 @@ app.include_router(etf_flows_router)
 # Then register both:
 app.include_router(dollar_liquidity_router)   # /liquidity/metrics, /liquidity/yield-curve, etc.
 app.include_router(depth_liquidity_router)    # /liquidity/depth, /liquidity/orderbook, etc.
-
+app.include_router(memory_debug_router)
 
 
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
