@@ -34,6 +34,11 @@ COINGECKO_BASE   = "https://api.coingecko.com/api/v3"
 _cache: dict = {}
 CACHE_TTL = 90  # seconds
 
+# Legacy ETF-flow fallback cache. Inputs are daily ETF data, so there is no
+# benefit to re-running the Yahoo work on every metrics/health request.
+_etf_flow_cache: dict = {"data": None, "ts": 0.0}
+ETF_FLOW_CACHE_TTL = 3600  # 1 hour
+
 def _cached_get(url: str, headers: dict, params: dict = None):
     cache_key = url + str(sorted((params or {}).items()))
     now = time.time()
@@ -189,35 +194,92 @@ def fetch_lth_supply() -> dict | None:
         return None
 
 
-# ─── yfinance: ETF Flow (legacy — superseded by fetch_etf_flow_farside) ───
+# ─── yfinance: ETF Flow (legacy fallback) ─────────────────────────────────
 
 def fetch_etf_flow() -> dict | None:
+    """
+    Legacy ETF-flow proxy used when no manual ETF-flow history is available.
+
+    Uses one bulk yFinance OHLCV download for all ETFs instead of eight
+    individual history() calls. Successful results are cached for one hour
+    because the underlying inputs are daily market data.
+    """
+    now = time.time()
+
+    if (
+        _etf_flow_cache["data"] is not None
+        and (now - _etf_flow_cache["ts"]) < ETF_FLOW_CACHE_TTL
+    ):
+        return _etf_flow_cache["data"]
+
     try:
         import yfinance as yf
-        TICKERS = ["IBIT", "FBTC", "ARKB", "BITB", "HODL", "BTCO", "EZBC", "BRRR"]
-        total_assets_now = 0
-        total_vol_today  = 0
-        total_vol_5d_avg = 0
-        assets_by_day    = {}
 
-        for ticker in TICKERS:
+        tickers = [
+            "IBIT", "FBTC", "ARKB", "BITB",
+            "HODL", "BTCO", "EZBC", "BRRR",
+        ]
+
+        total_assets_now = 0
+        total_vol_today = 0
+        total_vol_5d_avg = 0
+        assets_by_day = {}
+
+        # One shared 10-day OHLCV download instead of 8 separate history() calls.
+        raw = yf.download(
+            tickers,
+            period="10d",
+            auto_adjust=True,
+            progress=False,
+            threads=4,
+        )
+
+        if raw is None or raw.empty:
+            return None
+
+        close = raw["Close"] if "Close" in raw.columns else None
+        volume = raw["Volume"] if "Volume" in raw.columns else None
+
+        if close is None or volume is None:
+            return None
+
+        for ticker in tickers:
             try:
-                etf  = yf.Ticker(ticker)
+                # Keep the existing totalAssets source unchanged for now.
+                etf = yf.Ticker(ticker)
                 info = etf.info
-                hist = etf.history(period="10d")
-                if hist.empty:
-                    continue
+
                 assets = info.get("totalAssets", 0) or 0
                 total_assets_now += assets
-                vol_today = int(hist["Volume"].iloc[-1])
-                vol_5d    = int(hist["Volume"].iloc[-5:].mean())
-                total_vol_today  += vol_today
+
+                if ticker not in close.columns or ticker not in volume.columns:
+                    continue
+
+                close_series = close[ticker].dropna()
+                volume_series = volume[ticker].dropna()
+
+                common_index = close_series.index.intersection(volume_series.index)
+                if common_index.empty:
+                    continue
+
+                close_series = close_series.loc[common_index]
+                volume_series = volume_series.loc[common_index]
+
+                vol_today = int(volume_series.iloc[-1])
+                vol_5d = int(volume_series.iloc[-5:].mean())
+
+                total_vol_today += vol_today
                 total_vol_5d_avg += vol_5d
-                for date, row in hist.iterrows():
-                    d = str(date.date())
+
+                for dt in common_index:
+                    d = str(dt.date())
                     if d not in assets_by_day:
                         assets_by_day[d] = 0
-                    assets_by_day[d] += row["Close"] * row["Volume"]
+                    assets_by_day[d] += (
+                        float(close_series.loc[dt])
+                        * float(volume_series.loc[dt])
+                    )
+
             except Exception as e:
                 print(f"[data_sources] yfinance {ticker} error: {e}")
                 continue
@@ -227,15 +289,29 @@ def fetch_etf_flow() -> dict | None:
 
         sorted_days = sorted(assets_by_day.keys())
         if len(sorted_days) >= 2:
-            recent         = sum(assets_by_day[d] for d in sorted_days[-3:]) / 3
-            previous       = sum(assets_by_day[d] for d in sorted_days[-6:-3]) / 3
+            # Preserve the legacy proxy math exactly.
+            recent = sum(assets_by_day[d] for d in sorted_days[-3:]) / 3
+            previous = sum(assets_by_day[d] for d in sorted_days[-6:-3]) / 3
             flow_direction = recent - previous
         else:
             flow_direction = 0
 
-        vol_ratio    = total_vol_today / total_vol_5d_avg if total_vol_5d_avg else 1
+        vol_ratio = (
+            total_vol_today / total_vol_5d_avg
+            if total_vol_5d_avg
+            else 1
+        )
+
         min_aum, max_aum = 30_000_000_000, 120_000_000_000
-        percentile   = max(0, min(100, (total_assets_now - min_aum) / (max_aum - min_aum) * 100))
+        percentile = max(
+            0,
+            min(
+                100,
+                (total_assets_now - min_aum)
+                / (max_aum - min_aum)
+                * 100,
+            ),
+        )
 
         if vol_ratio > 2.0 and flow_direction > 0:
             alert, alert_level = "Strong acceleration", "extreme"
@@ -251,9 +327,9 @@ def fetch_etf_flow() -> dict | None:
         flow_usd = flow_direction * 0.001  # directional proxy only — not displayed
         current_str = None  # formatter uses AUM instead
         spark_vals = [assets_by_day[d] for d in sorted_days]
-        etf_spark  = _normalize_sparkline(spark_vals)
+        etf_spark = _normalize_sparkline(spark_vals)
 
-        return {
+        result = {
             "current_daily":         flow_usd,
             "last_7d_sum":           flow_usd * 7,
             "avg_30d":               flow_usd * 4.5,
@@ -264,6 +340,12 @@ def fetch_etf_flow() -> dict | None:
             "_aum_total":            total_assets_now,
             "_spark":                etf_spark,
         }
+
+        _etf_flow_cache["data"] = result
+        _etf_flow_cache["ts"] = now
+
+        return result
+
     except Exception as e:
         print(f"[data_sources] etf_flow error: {e}")
         return None
