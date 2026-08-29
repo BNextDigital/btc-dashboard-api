@@ -25,7 +25,7 @@ from equity_routes import equity_router   # rename the equity router
 from commodity_routes import commodity_router
 from etf_aum_routes import etf_aum_router
 from leading_routes import leading_router
-from shared.yf_cache  import warm_cache as _warm_yf
+from shared.yf_cache import warm_cache as _warm_yf, get_series as _yf
 from shared.fred_cache import flush as _flush_fred, status as _fred_status
 from sol_routes import sol_router
 from eth_routes import eth_router
@@ -692,8 +692,19 @@ PROXY_TICKERS = {
     "PYPL": "PayPal",
 }
 
+# Map display tickers to keys in shared/yf_cache.py.
+# BTC-USD and all five proxy stocks are already fetched by the process-wide cache.
+PROXY_CACHE_KEYS = {
+    "MSTR":    "mstr",
+    "COIN":    "coin",
+    "HOOD":    "hood",
+    "XYZ":     "xyz",
+    "PYPL":    "pypl",
+    "BTC-USD": "btc_usd",
+}
+
 _proxy_cache: dict = {"data": None, "ts": 0.0}
-PROXY_CACHE_TTL   = 300  # 5 minutes — yfinance calls are slow
+PROXY_CACHE_TTL = 300  # 5 minutes — matches the shared yFinance cache
 _metrics_cache: dict = {"data": None, "ts": 0.0}
 METRICS_CACHE_TTL = 60  # seconds
 
@@ -725,21 +736,23 @@ def _cross_corr_lag(stock: np.ndarray, btc: np.ndarray, max_lag: int = 5) -> tup
 
 
 def fetch_crypto_proxies() -> dict:
+    """
+    Build crypto-proxy correlations from the process-wide shared yFinance cache.
+
+    This avoids six independent Ticker.history(period="6mo") calls every five
+    minutes while preserving the same daily-close calculations.
+    """
     now = time.time()
     if _proxy_cache["data"] and now - _proxy_cache["ts"] < PROXY_CACHE_TTL:
         return _proxy_cache["data"]
 
     try:
-        import yfinance as yf
-
-        # Fetch closes individually — more reliable than multi-ticker download
         closes: dict[str, pd.Series] = {}
-        all_tickers = list(PROXY_TICKERS.keys()) + ["BTC-USD"]
 
-        for ticker in all_tickers:
-            hist = yf.Ticker(ticker).history(period="6mo", interval="1d")
-            if not hist.empty:
-                closes[ticker] = hist["Close"]
+        for ticker, cache_key in PROXY_CACHE_KEYS.items():
+            series = _yf(cache_key)
+            if series is not None and not series.empty:
+                closes[ticker] = series
 
         if "BTC-USD" not in closes:
             return {"crypto_proxies": None}
@@ -757,10 +770,10 @@ def fetch_crypto_proxies() -> dict:
 
             # Price change
             p0      = float(sc.iloc[-1])
-            p1d     = float(sc.iloc[-2])  if len(sc) >= 2  else p0
-            p7d     = float(sc.iloc[-8])  if len(sc) >= 8  else float(sc.iloc[0])
-            ch_1d   = (p0 / p1d  - 1) * 100
-            ch_7d   = (p0 / p7d  - 1) * 100
+            p1d     = float(sc.iloc[-2]) if len(sc) >= 2 else p0
+            p7d     = float(sc.iloc[-8]) if len(sc) >= 8 else float(sc.iloc[0])
+            ch_1d   = (p0 / p1d - 1) * 100
+            ch_7d   = (p0 / p7d - 1) * 100
 
             # Correlations
             corr_7d  = _pearson(ret[-7:],  btc_returns[-7:])
@@ -780,10 +793,10 @@ def fetch_crypto_proxies() -> dict:
             # Regime label
             c = abs(corr_30d)
             regime = (
-                "Lockstep"      if c >= 0.80 else
-                "Strong"        if c >= 0.65 else
-                "Moderate"      if c >= 0.45 else
-                "Weak"          if c >= 0.20 else
+                "Lockstep"     if c >= 0.80 else
+                "Strong"       if c >= 0.65 else
+                "Moderate"     if c >= 0.45 else
+                "Weak"         if c >= 0.20 else
                 "Decorrelated"
             )
 
@@ -1408,7 +1421,7 @@ def get_crypto_proxies():
     """
     Returns price, 7d/30d/90d BTC correlation, and lead/lag
     for the 5 S&P 500 crypto-exposed stocks.
-    Cached for 5 minutes — yfinance calls are slow.
+    Cached for 5 minutes — price history comes from the shared yFinance cache.
     """
     result = fetch_crypto_proxies()
     if not result.get("crypto_proxies"):
