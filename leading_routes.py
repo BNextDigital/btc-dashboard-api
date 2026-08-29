@@ -45,7 +45,7 @@ from pathlib import Path
 from fastapi import APIRouter
 # At the top of leading_routes.py, add:
 from data_sources import get_shared_coingecko, COINGECKO_BASE, _coingecko_headers, _cached_get
-
+from shared.yf_cache import get_series as _yf
 leading_router = APIRouter(prefix="/leading")
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -1254,27 +1254,25 @@ def _build_breakevens() -> dict:
 # ════════════════════════════════════════════════════════════════════════════
 # INDICATOR 8 — CME Basis Enhanced (trend + DTX normalization)
 # Source: Extends existing format_cme_basis() in main.py
-# Integration note: this route fetches independently; to avoid duplicate yFinance
-# calls, consider importing basis data from main.py's existing cache.
+# BTC futures price is read from the process-wide shared yFinance cache.
 # Lead time: 1-3 days
 # ════════════════════════════════════════════════════════════════════════════
 
 def fetch_basis_enhanced() -> dict | None:
     """
-    Fetches CME BTC futures via yFinance (same as main.py) and adds:
+    Fetches CME BTC futures from the shared yFinance cache and adds:
     - 5-day trend direction
     - Days-to-expiry normalized basis (annualized is already DTX-adjusted)
     - 5-day momentum signal
     """
     try:
-        import yfinance as yf
         from datetime import date as dt_date
 
-        btc_future = yf.Ticker("BTC=F")
-        hist       = btc_future.history(period="10d")
-        if hist.empty:
+        hist = _yf("btc_futures")
+        if hist is None or hist.empty:
             return None
-        futures_px = float(hist["Close"].iloc[-1])
+
+        futures_px = float(hist.iloc[-1])
 
         # Spot price from Deribit index — avoids CoinGecko rate limit
         spot_resp = _safe_get(f"{DERIBIT_BASE}/get_index_price",
@@ -1464,7 +1462,7 @@ def get_breakevens():
 
 @leading_router.get("/basis-enhanced")
 def get_basis_enhanced():
-    """CME BTC basis with 5-day trend and DTX normalization. yFinance."""
+    """CME BTC basis with 5-day trend and DTX normalization. Shared yFinance cache."""
     return _build_basis_enhanced()
 
 @leading_router.get("/all")
