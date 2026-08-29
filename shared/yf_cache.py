@@ -42,7 +42,7 @@ CACHE BEHAVIOUR
   TTL    : 5 minutes (matches the most frequent dashboard refresh)
   Scope  : process-wide — all routes share one copy of the data
   Storage: plain list[float] internally — pd.Series reconstructed on read
-  Thread : a lock prevents simultaneous redundant downloads
+  Thread : a lock prevents simultaneous redundant downloads; yFinance uses 4 workers
   Warmup : call warm_cache() from main.py startup to pre-fetch on boot
 
 ─────────────────────────────────────────────────────────────────────
@@ -207,7 +207,7 @@ ALL_TICKERS: dict[str, str] = {
     "hood":     "HOOD",
     "mara":     "MARA",
     "pypl":     "PYPL",
-    "sq":       "SQ",
+    "xyz":      "XYZ",
 }
 
 # ── Lookback ──────────────────────────────────────────────────────────────────
@@ -344,7 +344,7 @@ def _get_or_refresh() -> dict:
 
 def _fetch() -> dict[str, dict | None]:
     """
-    Single bulk yf.download() call for all tickers.
+    Single bulk yf.download() call for all tickers, capped at 4 download workers.
 
     Returns {key: {"values": list[float], "dates": list[str]} | None}.
 
@@ -361,12 +361,12 @@ def _fetch() -> dict[str, dict | None]:
     try:
         print(f"[yf_cache] Fetching {len(symbols)} tickers ({N_DAYS}d)…")
 
-        raw   = yf.download(
+        raw = yf.download(
             symbols,
             period=f"{N_DAYS}d",
             auto_adjust=True,
             progress=False,
-            threads=True,
+            threads=4,
         )
         close = raw["Close"] if "Close" in raw.columns else raw
 
