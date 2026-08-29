@@ -336,3 +336,12 @@ def flush_etf_aum_cache():
     global _cache
     _cache = {"data": None, "ts": 0.0}
     return {"flushed": True}
+
+# ── Registration ──────────────────────────────────────────────────────────────
+#
+#   from etf_aum_routes import etf_aum_router
+#   app.include_router(etf_aum_router)
+#
+# Endpoints:
+#   GET /etf-aum/metrics
+#   GET /etf-aum/cache/flush
