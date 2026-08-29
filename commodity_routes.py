@@ -29,8 +29,9 @@ import time
 import math
 from datetime import datetime
 from fastapi import APIRouter
-import yfinance as yf
 import pandas as pd
+
+from shared.yf_cache import get_series as _yf
 
 # ── Router ────────────────────────────────────────────────────────────────────
 commodity_router = APIRouter(prefix="/commodities")
@@ -118,22 +119,11 @@ def _chg_pct(a: float, b: float) -> float | None:
     if b == 0: return None
     return round((a - b) / b * 100, 2)
 
-# ── yFinance bulk fetch ───────────────────────────────────────────────────────
+# ── Shared yFinance fetch ─────────────────────────────────────────────────────
 
 def _fetch_bulk(n_days: int = 252) -> dict[str, pd.Series | None]:
-    tickers = [v[0] for v in TICKERS.values()]
-    result  = {k: None for k in TICKERS}
-    try:
-        raw   = yf.download(tickers, period=f"{n_days}d",
-                             auto_adjust=True, progress=False, threads=True)
-        close = raw["Close"] if "Close" in raw.columns else raw
-        for key, (ticker, _, _, _) in TICKERS.items():
-            if ticker in close.columns:
-                s = close[ticker].dropna()
-                result[key] = s if len(s) >= 5 else None
-    except Exception as e:
-        print(f"[commodities] yFinance bulk error: {e}")
-    return result
+    """Read commodity series from the process-wide shared yFinance cache."""
+    return {key: _yf(key) for key in TICKERS}
 
 # ── Card builder ──────────────────────────────────────────────────────────────
 
