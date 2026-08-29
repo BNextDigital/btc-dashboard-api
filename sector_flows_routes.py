@@ -55,7 +55,7 @@ sector_flows_router = APIRouter(prefix="/sector-flows")
 FLOW_CACHE_TTL  = 300    # 5 min
 COT_CACHE_TTL   = 3600   # 1 hour — COT is weekly
 OHLCV_CACHE_TTL = 300    # 5 min
-N_DAYS          = 300    # lookback for OHLCV fetch
+N_DAYS          = 60     # lookback for OHLCV fetch
 
 # ── Sector definitions ────────────────────────────────────────────────────────
 #
