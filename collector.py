@@ -1,23 +1,20 @@
 """
 collector.py — short-lived BTC dashboard analytics collector.
 
-Architecture:
-  1. Import the existing heavy FastAPI application and its route modules.
-  2. Invoke approved market-data GET endpoints directly in-process.
-  3. Persist one complete atomic JSON snapshot.
+The collector is intentionally disposable:
+  1. Import the existing heavy analytics app.
+  2. Run an explicit, audited manifest of frontend market-data GET routes.
+  3. Write one atomic JSON snapshot.
   4. Store an OI history sample.
-  5. Exit.
+  5. Exit so Linux reclaims pandas / NumPy / yFinance memory.
 
-This process is intentionally disposable. pandas / NumPy / yFinance memory is
-fully reclaimed by Linux when the process exits instead of remaining resident
-inside the always-on API server.
+Do not add background pollers here.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
-import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -29,79 +26,81 @@ from fastapi.routing import APIRoute
 from shared.snapshot_store import load_snapshot, write_snapshot_atomic
 
 
-# Exact top-level market-data endpoints used by the primary dashboard.
-EXACT_PATHS = {
+# Explicit frontend-facing market-data routes.
+#
+# Order matters: expensive aggregate endpoints are intentionally called before
+# related detail endpoints so their in-process caches can be reused during this
+# one collector run.
+SNAPSHOT_ROUTES = (
+    # ── BTC main dashboard ──────────────────────────────────────────────────
     "/metrics",
+    "/price",
     "/summary",
     "/causal",
-    "/price",
-    "/news",
     "/crypto-proxies",
     "/btc-premium",
-}
+    "/news",
+    "/etf-aum/metrics",
+    "/liquidity/depth",
 
-# Market-data router families. These are snapshot-safe unless they match an
-# excluded marker below.
-PREFIXES = (
-    "/macro",
-    "/sector-flows",
-    "/equity",
-    "/forex",
-    "/growth",
-    "/commodity",
-    "/commodities",
-    "/etf-aum",
-    "/leading",
-    "/sol",
-    "/eth",
-    "/etf-flows",
-    "/etf_flows",
-    "/liquidity",
+    # ── Macro / cross-asset dashboards ─────────────────────────────────────
+    "/macro/metrics",
+    "/liquidity/metrics",
+    "/liquidity/yield-curve",
+    "/forex/metrics",
+    "/growth/metrics",
+    "/equity/metrics",
+    "/commodities/metrics",
+    "/sector-flows/metrics",
+    "/leading/all",
+
+    # ── ETF & custody flows ─────────────────────────────────────────────────
+    # summary -> breakdown -> custody, so call summary first and let the
+    # module-level cache make the following two calls cheap.
+    "/etf-flows/summary",
+    "/etf-flows/breakdown",
+    "/etf-flows/custody",
+
+    # ── Solana dashboard ────────────────────────────────────────────────────
+    "/sol/metrics",
+    "/sol/price",
+    "/sol/summary",
+    "/sol/tvl",
+    "/sol/ousd-status",
+
+    # ── Ethereum dashboard ──────────────────────────────────────────────────
+    "/eth/metrics",
+    "/eth/price",
+    "/eth/summary",
+    "/eth/tvl",
+    "/eth/structural",
 )
 
-# Never execute maintenance, mutation, diagnostics, or parameterized-history
-# routes merely because they happen to be GET endpoints.
-EXCLUDED_MARKERS = (
-    "/cache",
-    "/flush",
-    "/debug",
-    "/backfill",
-    "/history",
-)
 
-# Core routes first so shared caches are populated once and reused by later
-# route builders during this collector process.
-PRIORITY = {
-    "/metrics": 0,
-    "/price": 10,
-    "/summary": 20,
-    "/causal": 30,
-    "/crypto-proxies": 40,
-    "/etf-aum/metrics": 50,
-}
+def _route_map(app) -> dict[str, APIRoute]:
+    """Return registered GET routes keyed by exact URL path."""
+    result: dict[str, APIRoute] = {}
+
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if "GET" not in (route.methods or set()):
+            continue
+        result[route.path] = route
+
+    return result
 
 
-def _approved_path(path: str) -> bool:
-    if path in EXACT_PATHS:
-        return True
-
-    if not path.startswith(PREFIXES):
-        return False
-
-    return not any(marker in path for marker in EXCLUDED_MARKERS)
-
-
-def _call_kwargs(route: APIRoute) -> dict[str, Any] | None:
+def _call_kwargs(route: APIRoute) -> dict[str, Any]:
     """
-    Build concrete default kwargs for a route endpoint.
+    Resolve optional/default route arguments for direct endpoint invocation.
 
-    Calling FastAPI endpoint functions directly is safe only when every
-    argument can be resolved without request-specific input. FastAPI Query()
-    defaults are taken from the route's parsed dependency metadata so the
-    endpoint receives the actual Python default rather than a Query object.
+    The manifest intentionally contains only parameter-free frontend data
+    routes, but this keeps the collector safe if one later gains an optional
+    FastAPI Query() parameter.
     """
     if "{" in route.path:
-        return None
+        raise RuntimeError("parameterized path is not snapshot-safe")
 
     query_defaults = {
         field.name: field.default
@@ -125,53 +124,31 @@ def _call_kwargs(route: APIRoute) -> dict[str, Any] | None:
 
         if parameter.default is not inspect.Parameter.empty:
             default = parameter.default
-            # FastAPI Param objects expose their underlying default.
             if hasattr(default, "default"):
                 default = default.default
             kwargs[parameter.name] = default
             continue
 
-        # Required request/body/dependency argument: not snapshot-safe.
-        return None
+        raise RuntimeError(
+            f"route requires request-specific argument: {parameter.name}"
+        )
 
     return kwargs
 
 
 async def _invoke(route: APIRoute) -> Any:
-    kwargs = _call_kwargs(route)
-    if kwargs is None:
-        raise RuntimeError("route requires request-specific arguments")
-
-    value = route.endpoint(**kwargs)
+    value = route.endpoint(**_call_kwargs(route))
     if inspect.isawaitable(value):
         value = await value
     return jsonable_encoder(value)
 
 
-def _routes_to_collect(app) -> list[APIRoute]:
-    candidates: list[APIRoute] = []
-
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-        if "GET" not in (route.methods or set()):
-            continue
-        if not _approved_path(route.path):
-            continue
-        if _call_kwargs(route) is None:
-            continue
-        candidates.append(route)
-
-    candidates.sort(key=lambda r: (PRIORITY.get(r.path, 1000), r.path))
-    return candidates
-
-
 def _store_oi_snapshot() -> dict[str, Any]:
     """
-    Preserve the old always-on OI poller's history behavior.
+    Store one OI observation per collector run.
 
-    The collector itself is the scheduled process in the new architecture, so
-    each collector run stores one OI observation before exiting.
+    Duplicate protection remains inside oi_history, so an early/repeated
+    collector invocation does not create duplicate samples.
     """
     try:
         from data_sources import _fetch_coingecko_derivatives
@@ -202,45 +179,75 @@ def _store_oi_snapshot() -> dict[str, Any]:
 
 
 async def collect() -> dict[str, Any]:
-    # Importing main is intentionally delayed until collector execution so the
-    # lightweight serving process never imports the analytics stack.
+    # Delayed import is intentional: only the disposable child process imports
+    # main.py and the analytics dependency tree.
     import main
 
     started = time.time()
     generated_at = datetime.now(timezone.utc).isoformat()
+
     routes: dict[str, Any] = {}
     errors: dict[str, str] = {}
 
-    selected = _routes_to_collect(main.app)
-    print(f"[collector] collecting {len(selected)} market-data routes")
+    registered = _route_map(main.app)
 
-    for route in selected:
+    missing = [
+        path for path in SNAPSHOT_ROUTES
+        if path not in registered
+    ]
+
+    if missing:
+        print(
+            "[collector] WARNING — manifest routes not registered: "
+            + ", ".join(missing)
+        )
+
+    selected = [
+        (path, registered[path])
+        for path in SNAPSHOT_ROUTES
+        if path in registered
+    ]
+
+    print(
+        f"[collector] collecting {len(selected)}/{len(SNAPSHOT_ROUTES)} "
+        "manifest routes"
+    )
+
+    # Record missing routes as errors. A previous good value can still be
+    # carried forward below.
+    for path in missing:
+        errors[path] = "RouteNotRegistered: route missing from main.app"
+
+    for path, route in selected:
         route_started = time.time()
-        try:
-            routes[route.path] = await _invoke(route)
-            elapsed = time.time() - route_started
-            print(f"[collector] OK {route.path} ({elapsed:.2f}s)")
-        except Exception as exc:
-            errors[route.path] = f"{type(exc).__name__}: {exc}"
-            print(f"[collector] ERROR {route.path}: {errors[route.path]}")
 
-    # /metrics is the primary dashboard contract. If it failed, keep the
-    # previously-good snapshot untouched rather than atomically replacing it
-    # with a broken one.
+        try:
+            routes[path] = await _invoke(route)
+            elapsed = time.time() - route_started
+            print(f"[collector] OK {path} ({elapsed:.2f}s)")
+        except Exception as exc:
+            errors[path] = f"{type(exc).__name__}: {exc}"
+            print(f"[collector] ERROR {path}: {errors[path]}")
+
+    # /metrics is the primary BTC dashboard contract. Never replace a known
+    # good snapshot if this route fails completely.
     if "/metrics" not in routes:
         raise RuntimeError(
             "primary /metrics route failed; existing snapshot preserved"
         )
 
-    # For non-critical route failures, preserve the last good value for that
-    # route when available. The snapshot records which routes are stale.
+    # Preserve previous good data for any secondary route that failed or was
+    # temporarily unavailable. This is especially important on free API tiers
+    # where transient 429s are expected.
     stale_routes: list[str] = []
     previous = load_snapshot()
+
     previous_routes = (
         previous.get("routes", {})
         if isinstance(previous, dict)
         else {}
     )
+
     if isinstance(previous_routes, dict):
         for failed_path in errors:
             if failed_path not in routes and failed_path in previous_routes:
@@ -250,11 +257,13 @@ async def collect() -> dict[str, Any]:
     oi_history = _store_oi_snapshot()
 
     finished = time.time()
+
     snapshot = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": generated_at,
         "generated_unix": finished,
         "duration_seconds": round(finished - started, 3),
+        "manifest_route_count": len(SNAPSHOT_ROUTES),
         "route_count": len(routes),
         "error_count": len(errors),
         "errors": errors,
@@ -264,9 +273,12 @@ async def collect() -> dict[str, Any]:
     }
 
     path = write_snapshot_atomic(snapshot)
+
     print(
         f"[collector] snapshot written to {path} "
-        f"({len(routes)} routes, {len(errors)} errors, "
+        f"({len(routes)}/{len(SNAPSHOT_ROUTES)} routes, "
+        f"{len(errors)} errors, "
+        f"{len(stale_routes)} stale, "
         f"{snapshot['duration_seconds']:.2f}s)"
     )
 
@@ -275,9 +287,12 @@ async def collect() -> dict[str, Any]:
 
 def main() -> int:
     try:
-        snapshot = asyncio.run(collect())
+        asyncio.run(collect())
     except Exception as exc:
-        print(f"[collector] fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"[collector] fatal: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         return 1
 
     return 0
