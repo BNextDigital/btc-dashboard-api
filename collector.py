@@ -77,16 +77,54 @@ SNAPSHOT_ROUTES = (
 )
 
 
-def _route_map(app) -> dict[str, APIRoute]:
-    """Return registered GET routes keyed by exact URL path."""
-    result: dict[str, APIRoute] = {}
+def _add_get_routes(
+    result: dict[str, APIRoute],
+    source,
+    source_name: str,
+) -> None:
+    """Merge GET routes from a FastAPI app or APIRouter into result."""
+    count = 0
 
-    for route in app.routes:
+    for route in getattr(source, "routes", []):
         if not isinstance(route, APIRoute):
             continue
         if "GET" not in (route.methods or set()):
             continue
         result[route.path] = route
+        count += 1
+
+    print(f"[collector] route source {source_name}: {count} GET routes")
+
+
+def _route_map(main_module) -> dict[str, APIRoute]:
+    """
+    Build the analytics route registry from the owning routers directly.
+
+    Top-level BTC endpoints live on main.app. Cross-asset/dashboard endpoints
+    live on APIRouter objects imported by main.py. Reading those routers
+    directly avoids depending on FastAPI having copied them into main.app.
+    """
+    result: dict[str, APIRoute] = {}
+
+    sources = (
+        ("main.app", main_module.app),
+        ("macro_router", main_module.macro_router),
+        ("sector_flows_router", main_module.sector_flows_router),
+        ("equity_router", main_module.equity_router),
+        ("forex_router", main_module.forex_router),
+        ("growth_router", main_module.growth_router),
+        ("commodity_router", main_module.commodity_router),
+        ("etf_aum_router", main_module.etf_aum_router),
+        ("leading_router", main_module.leading_router),
+        ("sol_router", main_module.sol_router),
+        ("eth_router", main_module.eth_router),
+        ("etf_flows_router", main_module.etf_flows_router),
+        ("dollar_liquidity_router", main_module.dollar_liquidity_router),
+        ("depth_liquidity_router", main_module.depth_liquidity_router),
+    )
+
+    for source_name, source in sources:
+        _add_get_routes(result, source, source_name)
 
     return result
 
@@ -189,7 +227,8 @@ async def collect() -> dict[str, Any]:
     routes: dict[str, Any] = {}
     errors: dict[str, str] = {}
 
-    registered = _route_map(main.app)
+    print(f"[collector] imported main from {getattr(main, '__file__', 'unknown')}")
+    registered = _route_map(main)
 
     missing = [
         path for path in SNAPSHOT_ROUTES
