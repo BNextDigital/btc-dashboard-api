@@ -58,6 +58,8 @@ from datetime import datetime
 import pandas as pd
 import yfinance as yf
 
+from shared.memory_utils import release_memory
+
 # ── Master ticker registry ────────────────────────────────────────────────────
 #
 # key          : short string used by route files (get_series("vix"))
@@ -389,11 +391,14 @@ def _fetch() -> dict[str, dict | None]:
         # result stays all-None — route files handle None gracefully
 
     finally:
-        # Explicitly drop the large intermediate DataFrame
+        # Explicitly drop the large intermediate DataFrame, then return any
+        # now-free native/glibc heap pages to Linux. This is important on
+        # Railway because RSS can otherwise remain hundreds of MB above the
+        # actual live working set after a yFinance/pandas refresh.
         try:
             del raw, close
         except NameError:
             pass
-        gc.collect()
+        release_memory("yf_cache refresh")
 
     return result
