@@ -32,21 +32,18 @@ from shared.snapshot_store import load_snapshot, write_snapshot_atomic
 # related detail endpoints so their in-process caches can be reused during this
 # one collector run.
 SNAPSHOT_ROUTES = (
-    # ── BTC main dashboard ──────────────────────────────────────────────────
+    # ── Core BTC + dashboard pages first ───────────────────────────────────
     "/metrics",
-    "/price",
     "/summary",
     "/causal",
     "/crypto-proxies",
-    "/btc-premium",
-    "/news",
     "/etf-aum/metrics",
-    "/liquidity/depth",
 
-    # ── Macro / cross-asset dashboards ─────────────────────────────────────
+    # ── Cross-asset dashboards ─────────────────────────────────────────────
     "/macro/metrics",
     "/liquidity/metrics",
     "/liquidity/yield-curve",
+    "/liquidity/depth",
     "/forex/metrics",
     "/growth/metrics",
     "/equity/metrics",
@@ -55,8 +52,6 @@ SNAPSHOT_ROUTES = (
     "/leading/all",
 
     # ── ETF & custody flows ─────────────────────────────────────────────────
-    # summary -> breakdown -> custody, so call summary first and let the
-    # module-level cache make the following two calls cheap.
     "/etf-flows/summary",
     "/etf-flows/breakdown",
     "/etf-flows/custody",
@@ -74,6 +69,13 @@ SNAPSHOT_ROUTES = (
     "/eth/summary",
     "/eth/tvl",
     "/eth/structural",
+
+    # ── Slow / rate-limit-prone extras last ────────────────────────────────
+    # /price is served live by snapshot_api.py, but keeping a snapshot copy
+    # provides a fallback for write-time price capture.
+    "/price",
+    "/btc-premium",
+    "/news",
 )
 
 
@@ -216,6 +218,60 @@ def _store_oi_snapshot() -> dict[str, Any]:
         }
 
 
+def _write_partial_checkpoint(
+    *,
+    routes: dict[str, Any],
+    errors: dict[str, str],
+    generated_at: str,
+    started: float,
+    last_completed_route: str,
+) -> None:
+    """
+    Atomically publish progress during a collector run.
+
+    This solves bootstrap after a manifest expansion: newly collected routes
+    become available immediately instead of waiting for every route to finish.
+    Existing good routes are preserved from the previous snapshot.
+
+    The final collector write still replaces this partial checkpoint with a
+    complete snapshot.
+    """
+    previous = load_snapshot()
+    previous_routes = (
+        previous.get("routes", {})
+        if isinstance(previous, dict)
+        else {}
+    )
+
+    merged_routes: dict[str, Any] = {}
+    if isinstance(previous_routes, dict):
+        merged_routes.update(previous_routes)
+    merged_routes.update(routes)
+
+    now = time.time()
+    checkpoint = {
+        "schema_version": 3,
+        "generated_at": generated_at,
+        "generated_unix": now,
+        "duration_seconds": round(now - started, 3),
+        "manifest_route_count": len(SNAPSHOT_ROUTES),
+        "route_count": len(merged_routes),
+        "error_count": len(errors),
+        "errors": errors,
+        "stale_routes": [],
+        "collecting": True,
+        "partial": True,
+        "last_completed_route": last_completed_route,
+        "routes": merged_routes,
+    }
+
+    write_snapshot_atomic(checkpoint)
+    print(
+        f"[collector] checkpoint {last_completed_route} "
+        f"({len(merged_routes)}/{len(SNAPSHOT_ROUTES)} routes available)"
+    )
+
+
 async def collect() -> dict[str, Any]:
     # Delayed import is intentional: only the disposable child process imports
     # main.py and the analytics dependency tree.
@@ -264,6 +320,13 @@ async def collect() -> dict[str, Any]:
             routes[path] = await _invoke(route)
             elapsed = time.time() - route_started
             print(f"[collector] OK {path} ({elapsed:.2f}s)")
+            _write_partial_checkpoint(
+                routes=routes,
+                errors=errors,
+                generated_at=generated_at,
+                started=started,
+                last_completed_route=path,
+            )
         except Exception as exc:
             errors[path] = f"{type(exc).__name__}: {exc}"
             print(f"[collector] ERROR {path}: {errors[path]}")
@@ -298,7 +361,7 @@ async def collect() -> dict[str, Any]:
     finished = time.time()
 
     snapshot = {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": generated_at,
         "generated_unix": finished,
         "duration_seconds": round(finished - started, 3),
@@ -307,6 +370,9 @@ async def collect() -> dict[str, Any]:
         "error_count": len(errors),
         "errors": errors,
         "stale_routes": stale_routes,
+        "collecting": False,
+        "partial": False,
+        "last_completed_route": SNAPSHOT_ROUTES[-1],
         "oi_history": oi_history,
         "routes": routes,
     }
