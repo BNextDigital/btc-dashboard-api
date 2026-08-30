@@ -39,7 +39,7 @@ Endpoints:
 """
 
 from __future__ import annotations
-import os, time, sqlite3, requests, threading
+import os, time, sqlite3, requests
 from datetime import datetime, timedelta, date, timezone
 from pathlib import Path
 from fastapi import APIRouter
@@ -1396,29 +1396,6 @@ def _build_basis_enhanced() -> dict:
     _basis_enh_cache = {"data": result, "ts": now}
     return result
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# BACKGROUND FUNDING POLLER
-# Stores daily funding snapshots every 8 hours (matching settlement cadence)
-# Starts automatically when this module is imported.
-# ════════════════════════════════════════════════════════════════════════════
-
-def _poll_funding() -> None:
-    """Background thread: stores funding rate snapshot every 8 hours."""
-    INTERVAL = 8 * 3600
-    print("[funding_poller] Starting — interval 8 hours")
-    while True:
-        try:
-            raw = fetch_funding_cumulative()
-            if raw:
-                print(f"[funding_poller] Stored daily_rate={raw['daily_rate']:+.4f}% cum_30d={raw['cum_30d']}")
-            else:
-                print("[funding_poller] No data returned")
-        except Exception as e:
-            print(f"[funding_poller] Error: {e}")
-        time.sleep(INTERVAL)
-
-threading.Thread(target=_poll_funding, daemon=True).start()
 
 
 # ════════════════════════════════════════════════════════════════════════════
