@@ -54,7 +54,6 @@ import os
 import math
 import time
 import sqlite3
-import threading
 import requests
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -823,23 +822,6 @@ def _flow_alert(net_btc: float | None) -> tuple[str, str]:
         return "Outflow — watch for distribution", "notable"
     return "Neutral flow", "none"
 
-# ── Background poller ─────────────────────────────────────────────────────────
-
-def _start_poller():
-    """Hourly background thread — pre-warms cache and keeps data fresh."""
-    def _run():
-        print("[etf_flows] Background poller started — interval 1 hour")
-        while True:
-            try:
-                _get_custody_cached()
-                print(f"[etf_flows] Custody poll complete at {datetime.utcnow().isoformat()}Z")
-            except Exception as e:
-                print(f"[etf_flows] Poller error: {e}")
-            time.sleep(CUSTODY_TTL)
-
-    threading.Thread(target=_run, daemon=True).start()
-
-_start_poller()
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
