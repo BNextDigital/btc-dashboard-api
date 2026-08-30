@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import Optional
 import time
-import threading
 import json
 import os
 import sqlite3
@@ -14,7 +13,6 @@ from pydantic import BaseModel
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from macro_routes import macro_router
-from contextlib import asynccontextmanager
 from forex_routes import forex_router
 from growth_inflation_routes import growth_router
 # Replace the old import:
@@ -25,14 +23,13 @@ from equity_routes import equity_router   # rename the equity router
 from commodity_routes import commodity_router
 from etf_aum_routes import etf_aum_router
 from leading_routes import leading_router
-from shared.yf_cache import warm_cache as _warm_yf, get_series as _yf
+from shared.yf_cache import get_series as _yf
 from shared.fred_cache import flush as _flush_fred, status as _fred_status
 from sol_routes import sol_router
 from eth_routes import eth_router
 from etf_flows_routes import etf_flows_router
 from liquidity_routes import liquidity_router as dollar_liquidity_router
 from liquidity_depth_routes import liquidity_router as depth_liquidity_router
-
 
 
 
@@ -71,33 +68,14 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ─── App ───────────────────────────────────────────────────────────────────
-
-# lifespan goes here, before app = FastAPI()
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # ── Warm the shared yFinance cache in background on boot ──────────────
-    # All route files share this one download — first real request is instant.
-    threading.Thread(target=_warm_yf, daemon=True).start()
- 
-    # ── Existing startup seeds (unchanged) ───────────────────────────────
-    try:
-        from macro_routes import _build_macro_metrics
-        _build_macro_metrics()
-    except Exception:
-        pass
-    try:
-        from leading_routes import _build_funding_cumulative, _build_tether_mints
-        _build_funding_cumulative()
-        _build_tether_mints()
-    except Exception:
-        pass
- 
-    yield
-    # (nothing to clean up on shutdown)
-# then app uses it
-app = FastAPI(title="BTC Decision Dashboard API")
-app = FastAPI(lifespan=lifespan)
+# ─── Analytics App ──────────────────────────────────────────────────────────
+#
+# This FastAPI app is NOT the long-lived Railway web server anymore.
+# collector.py imports it only to reuse the existing route functions and
+# analytics logic inside a short-lived child process.
+#
+# Do not add startup warmers, background pollers, or lifespan jobs here.
+app = FastAPI(title="BTC Decision Dashboard Analytics")
 
 app.add_middleware(
     CORSMiddleware,
@@ -124,7 +102,6 @@ app.include_router(etf_flows_router)
 # Then register both:
 app.include_router(dollar_liquidity_router)   # /liquidity/metrics, /liquidity/yield-curve, etc.
 app.include_router(depth_liquidity_router)    # /liquidity/depth, /liquidity/orderbook, etc.
-
 
 
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
@@ -382,27 +359,12 @@ def format_cme_basis(
     }
 
 
-# ─── OI Polling ────────────────────────────────────────────────────────────
-
-def _poll_oi() -> None:
-    INTERVAL = 240 * 60
-    print("[oi_poller] Starting OI polling job — interval 15 minutes")
-    while True:
-        try:
-            markets = _fetch_coingecko_derivatives()
-            if markets:
-                total_oi = sum(m["open_interest"] for m in markets)
-                store_snapshot(total_oi)
-                count = get_snapshot_count()
-                print(f"[oi_poller] Stored OI snapshot: ${total_oi / 1e9:.1f}B — {count} total snapshots")
-        except Exception as e:
-            print(f"[oi_poller] Error: {e}")
-        time.sleep(INTERVAL)
-
-
+# ─── OI History Initialization ─────────────────────────────────────────────
+#
+# OI sampling is owned by collector.py. These initializers remain so the
+# analytics functions can safely read/write their SQLite stores when invoked.
 init_db()
 init_history_db()
-threading.Thread(target=_poll_oi, daemon=True).start()
 
 def fetch_stablecoin_supply() -> dict:
     try:
