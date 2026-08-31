@@ -45,7 +45,7 @@ from pathlib import Path
 from fastapi import APIRouter
 # At the top of leading_routes.py, add:
 from data_sources import get_shared_coingecko, COINGECKO_BASE, _coingecko_headers, _cached_get
-from shared.yf_cache import get_series as _yf
+from shared.yf_core_cache import get_series as _yf
 leading_router = APIRouter(prefix="/leading")
 
 # ── Config ───────────────────────────────────────────────────────────────────
