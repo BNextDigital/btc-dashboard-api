@@ -1,14 +1,16 @@
 """
-collector.py — short-lived BTC dashboard analytics collector.
+collector.py — disposable analytics collector with cadence-aware modes.
 
-The collector is intentionally disposable:
-  1. Import the existing heavy analytics app.
-  2. Run an explicit, audited manifest of frontend market-data GET routes.
-  3. Write one atomic JSON snapshot.
-  4. Store an OI history sample.
-  5. Exit so Linux reclaims pandas / NumPy / yFinance memory.
+Modes:
+  fast    — 15-minute crypto/derivatives/depth state
+  market  — 30-minute cross-asset/yFinance dashboards
+  hourly  — 60-minute ETF custody/AUM + news
+  slow    — 4-hour FRED/structural indicators
+  all     — manual/bootstrap run of every mode
 
-Do not add background pollers here.
+Each run imports the heavy analytics stack, updates only its assigned routes,
+atomically merges them into the persisted snapshot, then exits so Linux
+reclaims pandas / NumPy / yFinance memory.
 """
 
 from __future__ import annotations
@@ -26,57 +28,109 @@ from fastapi.routing import APIRoute
 from shared.snapshot_store import load_snapshot, write_snapshot_atomic
 
 
-# Explicit frontend-facing market-data routes.
-#
-# Order matters: expensive aggregate endpoints are intentionally called before
-# related detail endpoints so their in-process caches can be reused during this
-# one collector run.
-SNAPSHOT_ROUTES = (
-    # ── Core BTC + dashboard pages first ───────────────────────────────────
+FAST_ROUTES = (
+    # BTC decision state — /metrics must be first because summary/causal reuse it.
     "/metrics",
     "/summary",
     "/causal",
-    "/crypto-proxies",
-    "/etf-aum/metrics",
-
-    # ── Cross-asset dashboards ─────────────────────────────────────────────
-    "/macro/metrics",
-    "/liquidity/metrics",
-    "/liquidity/yield-curve",
     "/liquidity/depth",
-    "/forex/metrics",
-    "/growth/metrics",
-    "/equity/metrics",
-    "/commodities/metrics",
-    "/sector-flows/metrics",
-    "/leading/all",
 
-    # ── ETF & custody flows ─────────────────────────────────────────────────
-    "/etf-flows/summary",
-    "/etf-flows/breakdown",
-    "/etf-flows/custody",
+    # Leading indicators whose own source TTL is 15 minutes.
+    "/leading/options",
+    "/leading/coinbase-premium",
+    "/leading/basis-enhanced",
 
-    # ── Solana dashboard ────────────────────────────────────────────────────
+    # SOL — live crypto / DeFi state.
     "/sol/metrics",
     "/sol/price",
     "/sol/summary",
     "/sol/tvl",
     "/sol/ousd-status",
 
-    # ── Ethereum dashboard ──────────────────────────────────────────────────
+    # ETH — live crypto / DeFi state.
     "/eth/metrics",
     "/eth/price",
     "/eth/summary",
     "/eth/tvl",
     "/eth/structural",
 
-    # ── Slow / rate-limit-prone extras last ────────────────────────────────
-    # /price is served live by snapshot_api.py, but keeping a snapshot copy
-    # provides a fallback for write-time price capture.
-    "/price",
+    # Rate-limit-prone extras go last so they cannot block core dashboard state.
     "/btc-premium",
+    "/price",
+)
+
+
+MARKET_ROUTES = (
+    # Trigger the shared 90-ticker market cache once, then reuse it below.
+    # 30 minutes keeps intraday FX/equity context useful while halving the
+    # previous 15-minute full-universe Yahoo workload.
+    "/macro/metrics",
+    "/forex/metrics",
+    "/equity/metrics",
+    "/commodities/metrics",
+    "/sector-flows/metrics",
+    "/crypto-proxies",
+)
+
+
+HOURLY_ROUTES = (
+    # These sources already describe an hourly cadence in their modules.
+    "/etf-aum/metrics",
+    "/etf-flows/summary",
+    "/etf-flows/breakdown",
+    "/etf-flows/custody",
     "/news",
 )
+
+
+SLOW_ROUTES = (
+    # FRED series are daily/weekly/monthly; their own modules use 1h–4h TTLs.
+    "/liquidity/metrics",
+    "/liquidity/yield-curve",
+    "/growth/metrics",
+
+    # Slow leading components. Funding's source TTL is 8h; the other sources
+    # are daily/weekly/monthly. Four hours is deliberately conservative.
+    "/leading/funding-cumulative",
+    "/leading/global-m2",
+    "/leading/cot",
+    "/leading/tether-mints",
+    "/leading/breakevens",
+)
+
+
+ROUTE_GROUPS = {
+    "fast": FAST_ROUTES,
+    "market": MARKET_ROUTES,
+    "hourly": HOURLY_ROUTES,
+    "slow": SLOW_ROUTES,
+}
+
+
+def _dedupe(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for group in groups:
+        for path in group:
+            if path not in seen:
+                seen.add(path)
+                result.append(path)
+    return tuple(result)
+
+
+ALL_ROUTES = _dedupe(FAST_ROUTES, MARKET_ROUTES, HOURLY_ROUTES, SLOW_ROUTES)
+
+
+LEADING_COMPONENTS = {
+    "options": "/leading/options",
+    "coinbase_premium": "/leading/coinbase-premium",
+    "funding_cumulative": "/leading/funding-cumulative",
+    "global_m2": "/leading/global-m2",
+    "cot": "/leading/cot",
+    "tether_mints": "/leading/tether-mints",
+    "breakevens": "/leading/breakevens",
+    "basis_enhanced": "/leading/basis-enhanced",
+}
 
 
 def _add_get_routes(
@@ -84,9 +138,7 @@ def _add_get_routes(
     source,
     source_name: str,
 ) -> None:
-    """Merge GET routes from a FastAPI app or APIRouter into result."""
     count = 0
-
     for route in getattr(source, "routes", []):
         if not isinstance(route, APIRoute):
             continue
@@ -94,20 +146,11 @@ def _add_get_routes(
             continue
         result[route.path] = route
         count += 1
-
     print(f"[collector] route source {source_name}: {count} GET routes")
 
 
 def _route_map(main_module) -> dict[str, APIRoute]:
-    """
-    Build the analytics route registry from the owning routers directly.
-
-    Top-level BTC endpoints live on main.app. Cross-asset/dashboard endpoints
-    live on APIRouter objects imported by main.py. Reading those routers
-    directly avoids depending on FastAPI having copied them into main.app.
-    """
     result: dict[str, APIRoute] = {}
-
     sources = (
         ("main.app", main_module.app),
         ("macro_router", main_module.macro_router),
@@ -124,21 +167,12 @@ def _route_map(main_module) -> dict[str, APIRoute]:
         ("dollar_liquidity_router", main_module.dollar_liquidity_router),
         ("depth_liquidity_router", main_module.depth_liquidity_router),
     )
-
     for source_name, source in sources:
         _add_get_routes(result, source, source_name)
-
     return result
 
 
 def _call_kwargs(route: APIRoute) -> dict[str, Any]:
-    """
-    Resolve optional/default route arguments for direct endpoint invocation.
-
-    The manifest intentionally contains only parameter-free frontend data
-    routes, but this keeps the collector safe if one later gains an optional
-    FastAPI Query() parameter.
-    """
     if "{" in route.path:
         raise RuntimeError("parameterized path is not snapshot-safe")
 
@@ -184,12 +218,6 @@ async def _invoke(route: APIRoute) -> Any:
 
 
 def _store_oi_snapshot() -> dict[str, Any]:
-    """
-    Store one OI observation per collector run.
-
-    Duplicate protection remains inside oi_history, so an early/repeated
-    collector invocation does not create duplicate samples.
-    """
     try:
         from data_sources import _fetch_coingecko_derivatives
         from oi_history import get_snapshot_count, store_snapshot
@@ -198,10 +226,7 @@ def _store_oi_snapshot() -> dict[str, Any]:
         if not markets:
             return {"stored": False, "reason": "no derivative markets"}
 
-        total_oi = sum(
-            float(m.get("open_interest") or 0)
-            for m in markets
-        )
+        total_oi = sum(float(m.get("open_interest") or 0) for m in markets)
         if total_oi <= 0:
             return {"stored": False, "reason": "total OI unavailable"}
 
@@ -218,110 +243,134 @@ def _store_oi_snapshot() -> dict[str, Any]:
         }
 
 
-def _write_partial_checkpoint(
+def _synthesize_leading_all(merged_routes: dict[str, Any]) -> None:
+    """Build /leading/all from independently refreshed component snapshots."""
+    previous_all = merged_routes.get("/leading/all")
+    if not isinstance(previous_all, dict):
+        previous_all = {}
+
+    payload: dict[str, Any] = {
+        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    }
+    available = 0
+
+    for key, path in LEADING_COMPONENTS.items():
+        if path in merged_routes:
+            payload[key] = merged_routes[path]
+            available += 1
+        elif key in previous_all:
+            payload[key] = previous_all[key]
+            available += 1
+
+    if available:
+        merged_routes["/leading/all"] = payload
+
+
+def _base_snapshot_state() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    previous = load_snapshot()
+    if not isinstance(previous, dict):
+        previous = {}
+
+    previous_routes = previous.get("routes", {})
+    if not isinstance(previous_routes, dict):
+        previous_routes = {}
+
+    collections = previous.get("collections", {})
+    if not isinstance(collections, dict):
+        collections = {}
+
+    return previous, dict(previous_routes), dict(collections)
+
+
+def _publish_checkpoint(
     *,
-    routes: dict[str, Any],
+    mode: str,
+    route_updates: dict[str, Any],
     errors: dict[str, str],
     generated_at: str,
     started: float,
     last_completed_route: str,
 ) -> None:
-    """
-    Atomically publish progress during a collector run.
-
-    This solves bootstrap after a manifest expansion: newly collected routes
-    become available immediately instead of waiting for every route to finish.
-    Existing good routes are preserved from the previous snapshot.
-
-    The final collector write still replaces this partial checkpoint with a
-    complete snapshot.
-    """
-    previous = load_snapshot()
-    previous_routes = (
-        previous.get("routes", {})
-        if isinstance(previous, dict)
-        else {}
-    )
-
-    merged_routes: dict[str, Any] = {}
-    if isinstance(previous_routes, dict):
-        merged_routes.update(previous_routes)
-    merged_routes.update(routes)
+    previous, merged_routes, collections = _base_snapshot_state()
+    merged_routes.update(route_updates)
+    _synthesize_leading_all(merged_routes)
 
     now = time.time()
-    checkpoint = {
-        "schema_version": 3,
+    collections[mode] = {
         "generated_at": generated_at,
         "generated_unix": now,
         "duration_seconds": round(now - started, 3),
-        "manifest_route_count": len(SNAPSHOT_ROUTES),
-        "route_count": len(merged_routes),
+        "collecting": True,
+        "last_completed_route": last_completed_route,
         "error_count": len(errors),
+    }
+
+    checkpoint = {
+        **previous,
+        "schema_version": 4,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_unix": now,
+        "route_count": len(merged_routes),
         "errors": errors,
-        "stale_routes": [],
         "collecting": True,
         "partial": True,
+        "active_collection": mode,
         "last_completed_route": last_completed_route,
+        "collections": collections,
         "routes": merged_routes,
     }
 
     write_snapshot_atomic(checkpoint)
     print(
-        f"[collector] checkpoint {last_completed_route} "
-        f"({len(merged_routes)}/{len(SNAPSHOT_ROUTES)} routes available)"
+        f"[collector:{mode}] checkpoint {last_completed_route} "
+        f"({len(merged_routes)} routes available)"
     )
 
 
-async def collect() -> dict[str, Any]:
-    # Delayed import is intentional: only the disposable child process imports
-    # main.py and the analytics dependency tree.
+async def collect(mode: str) -> dict[str, Any]:
     import main
+
+    if mode == "all":
+        selected_paths = ALL_ROUTES
+    else:
+        selected_paths = ROUTE_GROUPS[mode]
 
     started = time.time()
     generated_at = datetime.now(timezone.utc).isoformat()
-
-    routes: dict[str, Any] = {}
+    route_updates: dict[str, Any] = {}
     errors: dict[str, str] = {}
 
-    print(f"[collector] imported main from {getattr(main, '__file__', 'unknown')}")
+    print(f"[collector:{mode}] imported main from {getattr(main, '__file__', 'unknown')}")
     registered = _route_map(main)
 
-    missing = [
-        path for path in SNAPSHOT_ROUTES
-        if path not in registered
-    ]
-
+    missing = [path for path in selected_paths if path not in registered]
     if missing:
         print(
-            "[collector] WARNING — manifest routes not registered: "
+            f"[collector:{mode}] WARNING — routes not registered: "
             + ", ".join(missing)
         )
+        for path in missing:
+            errors[path] = "RouteNotRegistered: route missing from analytics routers"
 
     selected = [
         (path, registered[path])
-        for path in SNAPSHOT_ROUTES
+        for path in selected_paths
         if path in registered
     ]
 
     print(
-        f"[collector] collecting {len(selected)}/{len(SNAPSHOT_ROUTES)} "
-        "manifest routes"
+        f"[collector:{mode}] collecting {len(selected)}/{len(selected_paths)} routes"
     )
-
-    # Record missing routes as errors. A previous good value can still be
-    # carried forward below.
-    for path in missing:
-        errors[path] = "RouteNotRegistered: route missing from main.app"
 
     for path, route in selected:
         route_started = time.time()
-
         try:
-            routes[path] = await _invoke(route)
+            route_updates[path] = await _invoke(route)
             elapsed = time.time() - route_started
-            print(f"[collector] OK {path} ({elapsed:.2f}s)")
-            _write_partial_checkpoint(
-                routes=routes,
+            print(f"[collector:{mode}] OK {path} ({elapsed:.2f}s)")
+            _publish_checkpoint(
+                mode=mode,
+                route_updates=route_updates,
                 errors=errors,
                 generated_at=generated_at,
                 started=started,
@@ -329,77 +378,87 @@ async def collect() -> dict[str, Any]:
             )
         except Exception as exc:
             errors[path] = f"{type(exc).__name__}: {exc}"
-            print(f"[collector] ERROR {path}: {errors[path]}")
+            print(f"[collector:{mode}] ERROR {path}: {errors[path]}")
 
-    # /metrics is the primary BTC dashboard contract. Never replace a known
-    # good snapshot if this route fails completely.
-    if "/metrics" not in routes:
-        raise RuntimeError(
-            "primary /metrics route failed; existing snapshot preserved"
-        )
+    if mode in ("fast", "all") and "/metrics" not in route_updates:
+        raise RuntimeError("primary /metrics route failed; existing snapshot preserved")
 
-    # Preserve previous good data for any secondary route that failed or was
-    # temporarily unavailable. This is especially important on free API tiers
-    # where transient 429s are expected.
+    previous, merged_routes, collections = _base_snapshot_state()
+
     stale_routes: list[str] = []
-    previous = load_snapshot()
+    for failed_path in errors:
+        if failed_path not in route_updates and failed_path in merged_routes:
+            stale_routes.append(failed_path)
 
-    previous_routes = (
-        previous.get("routes", {})
-        if isinstance(previous, dict)
-        else {}
-    )
+    merged_routes.update(route_updates)
+    _synthesize_leading_all(merged_routes)
 
-    if isinstance(previous_routes, dict):
-        for failed_path in errors:
-            if failed_path not in routes and failed_path in previous_routes:
-                routes[failed_path] = previous_routes[failed_path]
-                stale_routes.append(failed_path)
-
-    oi_history = _store_oi_snapshot()
+    oi_history = previous.get("oi_history")
+    if mode in ("fast", "all"):
+        oi_history = _store_oi_snapshot()
 
     finished = time.time()
-
-    snapshot = {
-        "schema_version": 3,
+    collections[mode] = {
         "generated_at": generated_at,
         "generated_unix": finished,
         "duration_seconds": round(finished - started, 3),
-        "manifest_route_count": len(SNAPSHOT_ROUTES),
-        "route_count": len(routes),
+        "collecting": False,
+        "last_completed_route": (
+            selected[-1][0] if selected else None
+        ),
+        "route_count": len(route_updates),
+        "error_count": len(errors),
+        "stale_routes": stale_routes,
+    }
+
+    snapshot = {
+        **previous,
+        "schema_version": 4,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_unix": finished,
+        "route_count": len(merged_routes),
         "error_count": len(errors),
         "errors": errors,
         "stale_routes": stale_routes,
         "collecting": False,
         "partial": False,
-        "last_completed_route": SNAPSHOT_ROUTES[-1],
+        "active_collection": None,
+        "last_completed_route": (
+            selected[-1][0] if selected else None
+        ),
+        "collections": collections,
         "oi_history": oi_history,
-        "routes": routes,
+        "routes": merged_routes,
     }
 
     path = write_snapshot_atomic(snapshot)
-
     print(
-        f"[collector] snapshot written to {path} "
-        f"({len(routes)}/{len(SNAPSHOT_ROUTES)} routes, "
-        f"{len(errors)} errors, "
-        f"{len(stale_routes)} stale, "
-        f"{snapshot['duration_seconds']:.2f}s)"
+        f"[collector:{mode}] snapshot written to {path} "
+        f"({len(route_updates)} updated, {len(merged_routes)} available, "
+        f"{len(errors)} errors, {len(stale_routes)} stale, "
+        f"{snapshot['collections'][mode]['duration_seconds']:.2f}s)"
     )
-
     return snapshot
 
 
 def main() -> int:
+    mode = sys.argv[1].lower() if len(sys.argv) > 1 else "all"
+    if mode not in (*ROUTE_GROUPS.keys(), "all"):
+        print(
+            f"Unknown collector mode '{mode}'. "
+            f"Valid: {', '.join((*ROUTE_GROUPS.keys(), 'all'))}",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
-        asyncio.run(collect())
+        asyncio.run(collect(mode))
     except Exception as exc:
         print(
-            f"[collector] fatal: {type(exc).__name__}: {exc}",
+            f"[collector:{mode}] fatal: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
         return 1
-
     return 0
 
 
