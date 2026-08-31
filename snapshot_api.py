@@ -55,14 +55,162 @@ from oi_history import (
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-COLLECTOR_INTERVAL_SECONDS = max(
-    300,
-    int(os.getenv("COLLECTOR_INTERVAL_SECONDS", "900")),
-)
-COLLECTOR_TIMEOUT_SECONDS = max(
+COLLECTOR_INTERVALS = {
+    "fast": max(
+        300,
+        int(os.getenv("FAST_COLLECTOR_INTERVAL_SECONDS", "900")),
+    ),
+    "market": max(
+        900,
+        int(os.getenv("MARKET_COLLECTOR_INTERVAL_SECONDS", "1800")),
+    ),
+    "hourly": max(
+        1800,
+        int(os.getenv("HOURLY_COLLECTOR_INTERVAL_SECONDS", "3600")),
+    ),
+    "slow": max(
+        3600,
+        int(os.getenv("SLOW_COLLECTOR_INTERVAL_SECONDS", "14400")),
+    ),
+}
+
+COLLECTOR_TIMEOUTS = {
+    "fast": max(
+        120,
+        int(os.getenv("FAST_COLLECTOR_TIMEOUT_SECONDS", "600")),
+    ),
+    "market": max(
+        300,
+        int(os.getenv("MARKET_COLLECTOR_TIMEOUT_SECONDS", "900")),
+    ),
+    "hourly": max(
+        300,
+        int(os.getenv("HOURLY_COLLECTOR_TIMEOUT_SECONDS", "900")),
+    ),
+    "slow": max(
+        300,
+        int(os.getenv("SLOW_COLLECTOR_TIMEOUT_SECONDS", "900")),
+    ),
+}
+
+COLLECTOR_RETRY_SECONDS = max(
     60,
-    int(os.getenv("COLLECTOR_TIMEOUT_SECONDS", "600")),
+    int(os.getenv("COLLECTOR_RETRY_SECONDS", "300")),
 )
+
+DB_PATH = DATA_DIR / "basis_history.db"
+STABLECOIN_DB_PATH = DATA_DIR / "stablecoin_history.db"
+DOMINANCE_DB_PATH = DATA_DIR / "btc_dominance_history.db"
+OVERRIDE_FILE = DATA_DIR / "manual_overrides.json"
+
+JUDGMENT_FILE = Path(os.getenv("JUDGMENT_FILE", "judgment_log.json"))
+TRADELOG_FILE = Path(os.getenv("TRADELOG_FILE", "trade_log.json"))
+EXECUTION_FILE = Path(os.getenv("EXECUTION_FILE", "trade_execution.json"))
+
+_collector_lock = threading.Lock()
+_stop_event = threading.Event()
+
+
+def _run_collector(mode: str) -> bool:
+    if not _collector_lock.acquire(blocking=False):
+        print(f"[snapshot_api] collector busy; skipping {mode}")
+        return False
+
+    timeout = COLLECTOR_TIMEOUTS[mode]
+
+    try:
+        started = time.time()
+        print(f"[snapshot_api] starting {mode} collector subprocess")
+
+        completed = subprocess.run(
+            [sys.executable, "collector.py", mode],
+            cwd=str(Path(__file__).resolve().parent),
+            timeout=timeout,
+            check=False,
+        )
+
+        elapsed = time.time() - started
+
+        print(
+            f"[snapshot_api] {mode} collector exited "
+            f"code={completed.returncode} after {elapsed:.2f}s"
+        )
+
+        return completed.returncode == 0
+
+    except subprocess.TimeoutExpired:
+        print(
+            f"[snapshot_api] {mode} collector exceeded "
+            f"{timeout}s timeout"
+        )
+        return False
+
+    except Exception as exc:
+        print(f"[snapshot_api] {mode} collector launch error: {exc}")
+        return False
+
+    finally:
+        _collector_lock.release()
+
+
+def _initial_delay(mode: str, interval: int) -> float:
+    snapshot = load_snapshot()
+
+    if isinstance(snapshot, dict):
+        collections = snapshot.get("collections", {})
+
+        if isinstance(collections, dict):
+            info = collections.get(mode, {})
+
+            if isinstance(info, dict):
+                last = info.get("generated_unix")
+
+                if isinstance(last, (int, float)):
+                    age = max(0.0, time.time() - float(last))
+                    return max(0.0, interval - age)
+
+    # Stagger the first Phase 3 bootstrap.
+    return {
+        "fast": 0.0,
+        "market": 20.0,
+        "hourly": 40.0,
+        "slow": 60.0,
+    }[mode]
+
+
+def _collector_loop() -> None:
+    next_runs = {
+        mode: time.monotonic() + _initial_delay(mode, interval)
+        for mode, interval in COLLECTOR_INTERVALS.items()
+    }
+
+    print(
+        "[snapshot_api] collector schedule — "
+        + ", ".join(
+            f"{mode}={interval}s"
+            for mode, interval in COLLECTOR_INTERVALS.items()
+        )
+    )
+
+    while not _stop_event.is_set():
+        mode = min(next_runs, key=next_runs.get)
+
+        delay = max(
+            0.0,
+            next_runs[mode] - time.monotonic(),
+        )
+
+        if _stop_event.wait(delay):
+            return
+
+        success = _run_collector(mode)
+        interval = COLLECTOR_INTERVALS[mode]
+
+        next_runs[mode] = time.monotonic() + (
+            interval
+            if success
+            else min(COLLECTOR_RETRY_SECONDS, interval)
+        )
 
 DB_PATH = DATA_DIR / "basis_history.db"
 STABLECOIN_DB_PATH = DATA_DIR / "stablecoin_history.db"
@@ -120,7 +268,7 @@ def _collector_loop() -> None:
     # child process as soon as this API boots.
     _run_collector()
 
-    while not _stop_event.wait(COLLECTOR_INTERVAL_SECONDS):
+    while not _stop_event.wait(COLLECTOR_INTERVALS):
         _run_collector()
 
 
@@ -358,7 +506,7 @@ def health():
         "snapshot_available": data is not None,
         "snapshot_path": str(snapshot_path()),
         "snapshot_age_s": round(age) if age is not None else None,
-        "collector_interval_s": COLLECTOR_INTERVAL_SECONDS,
+        "collector_interval_s": COLLECTOR_INTERVALS,
         "snapshot_errors": (
             data.get("errors", {})
             if isinstance(data, dict)
