@@ -225,7 +225,7 @@ init_dominance_db()
 # ─── CME Basis — fetch & format ────────────────────────────────────────────
 
 def fetch_cme_basis() -> dict:
-    from shared.yf_cache import get_series
+    from shared.yf_core_cache import get_series
 
     fut_series  = get_series("btc_futures")   # pd.Series of daily closes — BTC=F
     spot_series = get_series("btc_usd")       # pd.Series of daily closes — BTC-USD
