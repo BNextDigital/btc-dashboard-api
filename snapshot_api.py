@@ -112,6 +112,12 @@ _stop_event = threading.Event()
 
 
 def _run_collector(mode: str) -> bool:
+    """
+    Run one disposable collector mode.
+
+    Collector modes never overlap. When a collector exits, Linux reclaims
+    the pandas/yFinance/native allocations created by that child process.
+    """
     if not _collector_lock.acquire(blocking=False):
         print(f"[snapshot_api] collector busy; skipping {mode}")
         return False
@@ -154,6 +160,12 @@ def _run_collector(mode: str) -> bool:
 
 
 def _initial_delay(mode: str, interval: int) -> float:
+    """
+    Resume each cadence from persisted collection metadata after a redeploy.
+
+    On the first Phase 3 bootstrap, stagger the modes so they do not all
+    compete for CPU, memory, SQLite, and external APIs at startup.
+    """
     snapshot = load_snapshot()
 
     if isinstance(snapshot, dict):
@@ -169,7 +181,6 @@ def _initial_delay(mode: str, interval: int) -> float:
                     age = max(0.0, time.time() - float(last))
                     return max(0.0, interval - age)
 
-    # Stagger the first Phase 3 bootstrap.
     return {
         "fast": 0.0,
         "market": 20.0,
@@ -179,6 +190,9 @@ def _initial_delay(mode: str, interval: int) -> float:
 
 
 def _collector_loop() -> None:
+    """
+    Schedule fast, market, hourly, and slow collector modes independently.
+    """
     next_runs = {
         mode: time.monotonic() + _initial_delay(mode, interval)
         for mode, interval in COLLECTOR_INTERVALS.items()
@@ -211,65 +225,6 @@ def _collector_loop() -> None:
             if success
             else min(COLLECTOR_RETRY_SECONDS, interval)
         )
-
-DB_PATH = DATA_DIR / "basis_history.db"
-STABLECOIN_DB_PATH = DATA_DIR / "stablecoin_history.db"
-DOMINANCE_DB_PATH = DATA_DIR / "btc_dominance_history.db"
-OVERRIDE_FILE = DATA_DIR / "manual_overrides.json"
-
-# Preserve current default filenames, while allowing Railway env vars to place
-# them on the persistent volume without another code change.
-JUDGMENT_FILE = Path(os.getenv("JUDGMENT_FILE", "judgment_log.json"))
-TRADELOG_FILE = Path(os.getenv("TRADELOG_FILE", "trade_log.json"))
-EXECUTION_FILE = Path(os.getenv("EXECUTION_FILE", "trade_execution.json"))
-
-_collector_lock = threading.Lock()
-_stop_event = threading.Event()
-
-
-def _run_collector() -> None:
-    """
-    Run the heavy analytics stack in a child process.
-
-    Only one collector may run at a time. When it exits, Linux reclaims every
-    pandas/yFinance/native allocation made by that child.
-    """
-    if not _collector_lock.acquire(blocking=False):
-        print("[snapshot_api] collector already running; skipping")
-        return
-
-    try:
-        started = time.time()
-        print("[snapshot_api] starting collector subprocess")
-        completed = subprocess.run(
-            [sys.executable, "collector.py"],
-            cwd=str(Path(__file__).resolve().parent),
-            timeout=COLLECTOR_TIMEOUT_SECONDS,
-            check=False,
-        )
-        elapsed = time.time() - started
-        print(
-            f"[snapshot_api] collector exited code={completed.returncode} "
-            f"after {elapsed:.2f}s"
-        )
-    except subprocess.TimeoutExpired:
-        print(
-            f"[snapshot_api] collector exceeded "
-            f"{COLLECTOR_TIMEOUT_SECONDS}s timeout"
-        )
-    except Exception as exc:
-        print(f"[snapshot_api] collector launch error: {exc}")
-    finally:
-        _collector_lock.release()
-
-
-def _collector_loop() -> None:
-    # Serve any persisted old snapshot immediately, while refreshing it in a
-    # child process as soon as this API boots.
-    _run_collector()
-
-    while not _stop_event.wait(COLLECTOR_INTERVALS):
-        _run_collector()
 
 
 @asynccontextmanager
@@ -506,7 +461,7 @@ def health():
         "snapshot_available": data is not None,
         "snapshot_path": str(snapshot_path()),
         "snapshot_age_s": round(age) if age is not None else None,
-        "collector_interval_s": COLLECTOR_INTERVALS,
+        "collector_intervals_s": COLLECTOR_INTERVALS,
         "snapshot_errors": (
             data.get("errors", {})
             if isinstance(data, dict)
