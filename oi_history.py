@@ -7,6 +7,7 @@ from pathlib import Path
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DB_PATH = DATA_DIR / "oi_history.db"
 NORMALIZED_INTERVAL_SECONDS = 15 * 60
+MIN_ANALYTICS_HISTORY_SECONDS = 7 * 86400
 
 
 def init_db() -> None:
@@ -123,10 +124,36 @@ def get_latest_snapshot() -> dict | None:
     return {"timestamp": row[0], "oi_usd": row[1]} if row else None
 
 
-def get_snapshot_count() -> int:
-    """Return the number of real persisted observations (not normalized points)."""
+def get_raw_snapshot_count() -> int:
+    """Return the number of actual persisted observations."""
     with sqlite3.connect(DB_PATH) as conn:
         return conn.execute("SELECT COUNT(*) FROM oi_snapshots").fetchone()[0]
+
+
+def get_snapshot_count() -> int:
+    """
+    Return an analytics-compatible 15-minute-equivalent history count.
+
+    data_sources.fetch_open_interest() historically uses row-count thresholds:
+    48 to enable historical analytics and 2880 to enable the 30-day change.
+    The legacy poller actually ran every four hours, so raw row count can never
+    represent elapsed coverage correctly. Returning the normalized count makes
+    those existing thresholds represent time again without throwing away the
+    sparse historical database.
+
+    Do not expose partial history as "real" before seven elapsed days. The old
+    48-row gate represented only 12 hours at the intended cadence and could
+    otherwise make a short history masquerade as a 7-day comparison.
+    """
+    raw = get_raw_snapshots(days=35)
+    if len(raw) < 2:
+        return len(raw)
+
+    coverage_seconds = raw[-1]["timestamp"] - raw[0]["timestamp"]
+    if coverage_seconds < MIN_ANALYTICS_HISTORY_SECONDS:
+        return min(len(raw), 47)
+
+    return len(_normalize_snapshots(raw))
 
 
 def get_history_stats(days: int = 90) -> dict:
@@ -135,6 +162,7 @@ def get_history_stats(days: int = 90) -> dict:
     if not raw:
         return {
             "raw_count": 0,
+            "analytics_count": 0,
             "normalized_count": 0,
             "coverage_days": 0.0,
             "oldest_timestamp": None,
@@ -148,6 +176,7 @@ def get_history_stats(days: int = 90) -> dict:
     )
     return {
         "raw_count": len(raw),
+        "analytics_count": get_snapshot_count(),
         "normalized_count": len(normalized),
         "coverage_days": round(coverage_days, 2),
         "oldest_timestamp": raw[0]["timestamp"],
