@@ -27,6 +27,7 @@ from urllib.request import Request, urlopen
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from fastapi.middleware.gzip import GZipMiddleware
 
 from shared.snapshot_store import (
     get_snapshot_route,
@@ -250,6 +251,12 @@ app = FastAPI(
 )
 
 app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1000,
+    compresslevel=5,
+)
+
+app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://btc-dashboard-production-689a.up.railway.app",
@@ -259,7 +266,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ── Snapshot helpers ────────────────────────────────────────────────────────
 
