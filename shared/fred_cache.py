@@ -93,6 +93,8 @@ ALL_SERIES: dict[str, Frequency] = {
     "DGS10":            "daily",    # 10-year Treasury
     "DGS20":            "daily",    # 20-year Treasury
     "DGS30":            "daily",    # 30-year Treasury
+    "DFII10":           "daily",  # 10Y TIPS real yield
+    "DFF":              "daily",  # daily Effective Fed Funds Rate
 
     # ── Credit spreads (daily) ────────────────────────────────────────────
     "BAMLH0A0HYM2":     "daily",    # HY OAS (high-yield spread)
