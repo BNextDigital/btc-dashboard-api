@@ -212,6 +212,45 @@ ALL_TICKERS: dict[str, str] = {
     "xyz":      "XYZ",
 }
 
+# ── Rolling 30-Day Fed Funds futures ────────────────────────────────────────
+#
+# The Day-2 macro layer derives a FedWatch-style next-meeting probability from
+# the same Yahoo bulk download. These are monthly CME 30-Day Fed Funds (ZQ)
+# contracts. Keeping them in this registry means /macro/metrics does NOT open a
+# second Yahoo session or allocate another large DataFrame.
+#
+# IMPORTANT: downstream UI labels the result as a local CME-methodology
+# derivation, not official CME FedWatch API output.
+#
+ZQ_MONTH_CODES = {
+    1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
+    7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z",
+}
+
+
+def _rolling_zq_tickers(months: int = 9) -> dict[str, str]:
+    now = datetime.utcnow()
+    year = now.year
+    month = now.month
+    result: dict[str, str] = {}
+
+    for _ in range(months):
+        key = f"zq_{year:04d}_{month:02d}"
+        code = ZQ_MONTH_CODES[month]
+        symbol = f"ZQ{code}{str(year)[-2:]}.CBT"
+        result[key] = symbol
+
+        month += 1
+        if month == 13:
+            month = 1
+            year += 1
+
+    return result
+
+
+ALL_TICKERS.update(_rolling_zq_tickers())
+
+
 # ── Lookback ──────────────────────────────────────────────────────────────────
 #
 # 252 trading days (1 trading year) is enough for:
