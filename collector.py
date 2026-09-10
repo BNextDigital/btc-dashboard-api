@@ -40,6 +40,10 @@ FAST_ROUTES = (
     "/leading/coinbase-premium",
     "/leading/basis-enhanced",
 
+    # Synthesized last so it can reuse the freshly checkpointed /metrics,
+    # /liquidity/depth and CME basis snapshots without another external fetch.
+    "/derivatives/pressure",
+
     # SOL — live crypto / DeFi state.
     "/sol/metrics",
     "/sol/price",
