@@ -482,6 +482,57 @@ def _build_macro_metrics() -> dict:
     y2_val  = yields["2y"].get("current")
     y10_val = yields["10y"].get("current")
 
+    # ── Build legacy payload first ────────────────────────────────────────
+    # Keep the existing /macro/metrics contract intact so current cards
+    # continue to work while the Day 2 layer is added underneath.
+    result = {
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "yields": yields,
+        "curve": {
+            "spread_2y10y_bp": (
+                round((y10_val - y2_val) * 100)
+                if (y2_val is not None and y10_val is not None)
+                else None
+            ),
+            "label": _spread_label(y2_val, y10_val),
+        },
+        "dxy":       _fmt_dxy(yf_data.get("dxy")),
+        "vix":       _fmt_vix(yf_data.get("vix")),
+        "hy_oas":    _fmt_hy_oas(fred_hy_data),
+        "nasdaq100": _fmt_equity_sma_card(
+            "Nasdaq-100",
+            yf_data.get("nasdaq100"),
+        ),
+        "vxn":       _fmt_vxn(yf_data.get("vxn")),
+        "sp500":     _fmt_equity_sma_card(
+            "S&P 500",
+            yf_data.get("sp500"),
+        ),
+        "brent":     _fmt_equity_sma_card(
+            "Brent Crude",
+            yf_data.get("brent"),
+        ),
+        "gold":      _fmt_equity_sma_card(
+            "Gold",
+            yf_data.get("gold"),
+        ),
+        "silver":    _fmt_equity_sma_card(
+            "Silver",
+            yf_data.get("silver"),
+        ),
+        "platinum":  _fmt_equity_sma_card(
+            "Platinum",
+            yf_data.get("platinum"),
+        ),
+        "copper":    _fmt_equity_sma_card(
+            "Copper",
+            yf_data.get("copper"),
+        ),
+    }
+
+    # ── Add Day 2 interpretation layer ───────────────────────────────────
+    # enrich_macro_metrics() preserves the legacy root fields and adds
+    # a nested Day 2 payload with Fed expectations, real yields, regime and chain.
     result = enrich_macro_metrics(result)
 
     # ── Persist daily snapshot to SQLite ─────────────────────────────────
