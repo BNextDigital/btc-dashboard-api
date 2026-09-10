@@ -161,10 +161,11 @@ ALL_TICKERS: dict[str, str] = {
     "vix":      "^VIX",
     "vxn":      "^VXN",
 
-    # ── US Treasury Yields ────────────────────────────────────────────────
+    # ── US Treasury Yields / futures ──────────────────────────────────────
     "yield_1y": "^IRX",
     "yield_5y": "^FVX",
     "yield_10y":"^TNX",
+    "two_year_note_future": "ZT=F",  # 2Y T-Note futures; price direction inversely tracks yield
 
     # ── FX — Major Pairs ──────────────────────────────────────────────────
     "dxy":      "DX-Y.NYB",
