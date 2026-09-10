@@ -1067,6 +1067,42 @@ def _build_depth_assessment(
             else "—"
         ),
         "liquidation_source": liq["source"],
+
+        # Side-specific nearby liquidation clusters. These are exposed only as
+        # measured heatmap data when CoinGlass parsed successfully. The existing
+        # OI heuristic remains available to Spot Depth for stress testing, but is
+        # NOT promoted to measured long/short liquidation data.
+        "liquidation_data_mode": (
+            "measured_heatmap"
+            if liq["source"] == "CoinGlass heatmap"
+            else "heuristic_scenario"
+            if liq["source"] == "OI estimate (heuristic)"
+            else "unavailable"
+        ),
+        "long_liquidation_cluster_usd_raw": (
+            round(float(liq["long_liq_usd"]), 2)
+            if liq["source"] == "CoinGlass heatmap"
+            and float(liq["long_liq_usd"] or 0) > 0
+            else None
+        ),
+        "short_liquidation_cluster_usd_raw": (
+            round(float(liq["short_liq_usd"]), 2)
+            if liq["source"] == "CoinGlass heatmap"
+            and float(liq["short_liq_usd"] or 0) > 0
+            else None
+        ),
+        "long_liquidation_cluster_usd": (
+            _fmt_usd(float(liq["long_liq_usd"]))
+            if liq["source"] == "CoinGlass heatmap"
+            and float(liq["long_liq_usd"] or 0) > 0
+            else "—"
+        ),
+        "short_liquidation_cluster_usd": (
+            _fmt_usd(float(liq["short_liq_usd"]))
+            if liq["source"] == "CoinGlass heatmap"
+            and float(liq["short_liq_usd"] or 0) > 0
+            else "—"
+        ),
         "oi_usd": (
             _fmt_usd(oi_usd)
             if oi_usd > 0
