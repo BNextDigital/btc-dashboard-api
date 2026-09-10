@@ -170,6 +170,7 @@ def _route_map(main_module) -> dict[str, APIRoute]:
         ("etf_flows_router", main_module.etf_flows_router),
         ("dollar_liquidity_router", main_module.dollar_liquidity_router),
         ("depth_liquidity_router", main_module.depth_liquidity_router),
+        ("derivatives_router", main_module.derivatives_router),
     )
     for source_name, source in sources:
         _add_get_routes(result, source, source_name)
