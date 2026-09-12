@@ -39,7 +39,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from shared.cg_cache import (
-    cg_request as _cg_shared,
+    get_asset_market as _cg_market,
+    get_market_chart as _cg_market_chart,
     get_weighted_funding_oi as _cg_derivs,
 )
 from shared.yf_core_cache import get_series as _yf_core_series
@@ -282,101 +283,41 @@ def _next_cme_eth_expiry(
     return _last_friday(year, month)
 
 
-# ── CoinGecko helpers ─────────────────────────────────────────────────────────
-
-def _cg(
-    path: str,
-    params: Optional[dict] = None,
-):
-    """
-    Shared CoinGecko request/auth helper.
-
-    shared/cg_cache.py should use x-cg-demo-api-key for COINGECKO_API_KEY,
-    unless a separate Pro key is configured.
-    """
-    return _cg_shared(path, params)
-
-
 def fetch_eth_market() -> dict:
     """
     Current ETH market state.
     """
-    data = _cg(
-        "/coins/ethereum",
-        {
-            "localization": "false",
-            "tickers": "false",
-            "market_data": "true",
-            "community_data": "false",
-            "developer_data": "false",
-            "sparkline": "false",
-        },
-    )
-
-    if not isinstance(data, dict):
+    market_data = _cg_market("ethereum")
+    btc_market = _cg_market("bitcoin")
+    if not market_data:
         return {}
 
-    market_data = data.get("market_data")
-    if not isinstance(market_data, dict):
-        return {}
+    price_usd = _safe_float(market_data.get("current_price"))
+    btc_price_usd = _safe_float(btc_market.get("current_price"))
 
     return {
-        "price_usd": _safe_float(
-            market_data.get(
-                "current_price",
-                {},
-            ).get("usd")
-        ),
-        "price_btc": _safe_float(
-            market_data.get(
-                "current_price",
-                {},
-            ).get("btc")
+        "price_usd": price_usd,
+        "price_btc": (
+            price_usd / btc_price_usd
+            if price_usd is not None and btc_price_usd
+            else None
         ),
         "change_24h": _safe_float(
-            market_data.get(
-                "price_change_percentage_24h"
-            )
+            market_data.get("price_change_percentage_24h_in_currency")
         ),
         "change_7d": _safe_float(
-            market_data.get(
-                "price_change_percentage_7d"
-            )
+            market_data.get("price_change_percentage_7d_in_currency")
         ),
         "change_30d": _safe_float(
-            market_data.get(
-                "price_change_percentage_30d"
-            )
+            market_data.get("price_change_percentage_30d_in_currency")
         ),
-        "volume_24h": _safe_float(
-            market_data.get(
-                "total_volume",
-                {},
-            ).get("usd")
-        ),
-        "market_cap": _safe_float(
-            market_data.get(
-                "market_cap",
-                {},
-            ).get("usd")
-        ),
+        "volume_24h": _safe_float(market_data.get("total_volume")),
+        "market_cap": _safe_float(market_data.get("market_cap")),
         "circulating_supply": _safe_float(
-            market_data.get(
-                "circulating_supply"
-            )
+            market_data.get("circulating_supply")
         ),
-        "ath": _safe_float(
-            market_data.get(
-                "ath",
-                {},
-            ).get("usd")
-        ),
-        "ath_change_pct": _safe_float(
-            market_data.get(
-                "ath_change_percentage",
-                {},
-            ).get("usd")
-        ),
+        "ath": _safe_float(market_data.get("ath")),
+        "ath_change_pct": _safe_float(market_data.get("ath_change_percentage")),
         "source": "CoinGecko",
     }
 
@@ -390,14 +331,7 @@ def fetch_eth_market_chart(
     CoinGecko OHLC only contains price candles. Volume metrics must use
     market_chart.total_volumes instead.
     """
-    data = _cg(
-        "/coins/ethereum/market_chart",
-        {
-            "vs_currency": "usd",
-            "days": str(days),
-            "interval": "daily",
-        },
-    )
+    data = _cg_market_chart("ethereum", days)
 
     if not isinstance(data, dict):
         return {

@@ -469,16 +469,17 @@ def fetch_etf_flow_farside() -> dict | None:
 # ─── CoinGecko: shared fetch ───────────────────────────────────────────────
 
 def _fetch_coingecko_all() -> tuple:
-    chart = _cached_get(
-        f"{COINGECKO_BASE}/coins/bitcoin/market_chart",
-        _coingecko_headers(),
-        {"vs_currency": "usd", "days": "30", "interval": "daily"},
-    )
-    ohlcv = _cached_get(
-        f"{COINGECKO_BASE}/coins/bitcoin/ohlc",
-        _coingecko_headers(),
-        {"vs_currency": "usd", "days": "30"},
-    )
+    from shared.cg_cache import get_market_chart
+
+    chart = get_market_chart("bitcoin", 30)
+    # Daily market-chart prices are sufficient for the close-to-close change
+    # calculations below. Preserve the established OHLC-shaped contract so the
+    # downstream formatter does not need to know where the closes came from.
+    ohlcv = [
+        [row[0], row[1], row[1], row[1], row[1]]
+        for row in chart.get("prices", [])
+        if isinstance(row, (list, tuple)) and len(row) >= 2
+    ] if isinstance(chart, dict) else []
     return chart, ohlcv
 
 
@@ -586,10 +587,10 @@ def fetch_realized_cap(chart: dict | None = None) -> dict | None:
 # ─── CoinGecko: Derivatives (OI + Funding) ────────────────────────────────
 
 def _fetch_coingecko_derivatives() -> list | None:
-    data = _cached_get(
-        f"{COINGECKO_BASE}/derivatives",
-        _coingecko_headers(),
-    )
+    # BTC, ETH and SOL share this large response within one collector run.
+    from shared.cg_cache import get_derivatives
+
+    data = get_derivatives()
     if not data:
         return None
     try:
