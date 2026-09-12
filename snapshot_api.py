@@ -29,6 +29,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.middleware.gzip import GZipMiddleware
 
+from growth_release_watcher import GrowthReleaseWatcher
+
 from shared.snapshot_store import (
     get_snapshot_route,
     load_snapshot,
@@ -87,6 +89,10 @@ COLLECTOR_TIMEOUTS = {
     "hourly": max(
         300,
         int(os.getenv("HOURLY_COLLECTOR_TIMEOUT_SECONDS", "900")),
+    ),
+    "growth": max(
+        180,
+        int(os.getenv("GROWTH_COLLECTOR_TIMEOUT_SECONDS", "900")),
     ),
     "slow": max(
         300,
@@ -228,6 +234,12 @@ def _collector_loop() -> None:
         )
 
 
+_growth_release_watcher = GrowthReleaseWatcher(
+    run_growth_collector=lambda: _run_collector("growth"),
+    get_growth_snapshot=lambda: get_snapshot_route("/growth/metrics"),
+    stop_event=_stop_event,
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_history_db()
@@ -239,7 +251,7 @@ async def lifespan(app: FastAPI):
         name="snapshot-collector-scheduler",
     )
     thread.start()
-
+    _growth_release_watcher.start()
     yield
 
     _stop_event.set()
@@ -430,8 +442,37 @@ def _fmt_billions(v: float) -> str:
         return f"${v / 1_000_000_000_000:.2f}T"
     return f"${v / 1_000_000_000:.1f}B"
 
+@app.get("/growth/release-status")
+def growth_release_status():
+    return _growth_release_watcher.status()
 
-# ── Service/status routes ──────────────────────────────────────────────────
+
+@app.post("/growth/refresh")
+def growth_refresh():
+    """
+    Manually request one fresh Growth collector run without making the
+    HTTP request wait for the heavy child process to finish.
+    """
+    if _collector_lock.locked():
+        return {
+            "accepted": False,
+            "reason": "collector_busy",
+        }
+
+    thread = threading.Thread(
+        target=lambda: _run_collector("growth"),
+        daemon=True,
+        name="manual-growth-refresh",
+    )
+    thread.start()
+
+    return {
+        "accepted": True,
+        "mode": "growth",
+    }
+
+
+#── Service/status routes ──────────────────────────────────────────────────
 
 @app.get("/")
 def root():
