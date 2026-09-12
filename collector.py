@@ -5,7 +5,8 @@ Modes:
   fast    — 15-minute crypto/derivatives/depth state
   market  — 30-minute cross-asset/yFinance dashboards
   hourly  — 60-minute ETF custody/AUM + news
-  slow    — 4-hour FRED/structural indicators
+  growth  — release-aware Growth/Inflation refresh (event driven)
+  slow    — 4-hour structural indicators
   all     — manual/bootstrap run of every mode
 
 Each run imports the heavy analytics stack, updates only its assigned routes,
@@ -86,13 +87,17 @@ HOURLY_ROUTES = (
     "/news",
 )
 
+GROWTH_ROUTES = (
+    # Triggered by growth_release_watcher.py when a scheduled release
+    # actually lands on FRED, plus one weekday end-of-day refresh.
+    "/growth/metrics",
+)
+
 
 SLOW_ROUTES = (
-    # FRED series are daily/weekly/monthly; their own modules use 1h–4h TTLs.
+    # Structural indicators that do not need release-event timing.
     "/liquidity/metrics",
     "/liquidity/yield-curve",
-    "/growth/metrics",
-
     # Slow leading components. Funding's source TTL is 8h; the other sources
     # are daily/weekly/monthly. Four hours is deliberately conservative.
     "/leading/funding-cumulative",
@@ -107,6 +112,7 @@ ROUTE_GROUPS = {
     "fast": FAST_ROUTES,
     "market": MARKET_ROUTES,
     "hourly": HOURLY_ROUTES,
+    "growth": GROWTH_ROUTES,
     "slow": SLOW_ROUTES,
 }
 
@@ -122,7 +128,13 @@ def _dedupe(*groups: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(result)
 
 
-ALL_ROUTES = _dedupe(FAST_ROUTES, MARKET_ROUTES, HOURLY_ROUTES, SLOW_ROUTES)
+ALL_ROUTES = _dedupe(
+    FAST_ROUTES,
+    MARKET_ROUTES,
+    HOURLY_ROUTES,
+    GROWTH_ROUTES,
+    SLOW_ROUTES,
+)
 
 
 LEADING_COMPONENTS = {
