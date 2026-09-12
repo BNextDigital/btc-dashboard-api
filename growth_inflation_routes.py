@@ -94,7 +94,7 @@ FRED_SERIES = {
     "retail":    ("RSAFS",         "monthly",   "millions"),
     "sentiment": ("UMCSENT",       "monthly",   "index"),
     "inf_exp":   ("MICH",          "monthly",   "pct"),     # 1Y inflation expectations
-    "ism":       ("NAPM",          "monthly",   "index"),   # ISM manufacturing PMI
+    "mcumfn":       ("MCUMFN",          "monthly",   "index"),   # ISM manufacturing PMI
 }
 
 # ── City/pipe metaphor labels ─────────────────────────────────────────────────
@@ -153,9 +153,21 @@ def _fred(series_id: str, n_obs: int = 60) -> list[tuple[str, float]]:
             except (ValueError, KeyError):
                 pass
         return result
+    except requests.HTTPError as e:
+      status = (
+          e.response.status_code
+          if e.response is not None
+          else "unknown"
+      )
+      print(f"[growth] FRED {series_id}: HTTP {status}")
+      return []
+
     except Exception as e:
-        print(f"[growth] FRED {series_id}: {e}")
-        return []
+        print(
+            f"[growth] FRED {series_id}: "
+            f"{type(e).__name__}"
+        )
+      return []
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
