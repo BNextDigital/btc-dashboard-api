@@ -24,7 +24,7 @@ from typing import Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.middleware.gzip import GZipMiddleware
@@ -546,6 +546,11 @@ def cache_status():
 
 @app.get("/price")
 def get_price():
+    # Dashboard reads follow the collector cadence. Live CoinGecko pricing is
+    # reserved for user-authored trade/judgment timestamps below.
+    snapshot_price = get_snapshot_route("/price")
+    if isinstance(snapshot_price, dict):
+        return snapshot_price
     return _live_btc_price_data()
 
 
@@ -1169,6 +1174,114 @@ def get_db_summary():
 
 # ── Snapshot-backed compatibility layer ────────────────────────────────────
 
+DASHBOARD_BUNDLE_ROUTES = {
+    "btc": {
+        "price": "/price",
+        "metrics": "/metrics",
+        "summary": "/summary",
+        "causal": "/causal",
+        "premium": "/btc-premium",
+        "spotDepth": "/liquidity/depth",
+        "perpsPressure": "/derivatives/pressure",
+        "proxyStocks": "/crypto-proxies",
+        "news": "/news",
+        "etfAum": "/etf-aum/metrics",
+    },
+    "eth": {
+        "metrics": "/eth/metrics",
+        "price": "/eth/price",
+        "summary": "/eth/summary",
+        "tvl": "/eth/tvl",
+        "signature": "/eth/structural",
+    },
+    "sol": {
+        "metrics": "/sol/metrics",
+        "price": "/sol/price",
+        "summary": "/sol/summary",
+        "tvl": "/sol/tvl",
+        "signature": "/sol/ousd-status",
+    },
+}
+
+
+def _apply_btc_metric_overrides(value):
+    if not isinstance(value, dict):
+        return value
+
+    overrides = _load_overrides()
+    if not overrides:
+        return value
+
+    result = dict(value)
+    for key, override in overrides.items():
+        if key in result and isinstance(result[key], dict):
+            result[key] = {
+                **result[key],
+                **override,
+                "_is_override": True,
+            }
+    return result
+
+
+@app.get("/dashboard/{asset}")
+def get_dashboard_bundle(asset: str, request: Request, response: Response):
+    """Return one page-ready payload instead of many snapshot route reads."""
+    route_map = DASHBOARD_BUNDLE_ROUTES.get(asset.lower())
+    if route_map is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown dashboard: {asset}",
+        )
+
+    snapshot = load_snapshot()
+    if not isinstance(snapshot, dict):
+        raise HTTPException(
+            status_code=503,
+            detail="Market snapshot not available yet",
+        )
+
+    routes = snapshot.get("routes", {})
+    if not isinstance(routes, dict):
+        raise HTTPException(status_code=503, detail="Market snapshot is invalid")
+
+    payload = {}
+    missing_routes = []
+    for key, path in route_map.items():
+        if path not in routes:
+            missing_routes.append(path)
+            continue
+        value = routes[path]
+        if asset.lower() == "btc" and key == "metrics":
+            value = _apply_btc_metric_overrides(value)
+        payload[key] = value
+
+    revision = str(
+        snapshot.get("generated_at")
+        or snapshot.get("generated_unix")
+        or "unknown"
+    )
+    etag = f'W/"{revision}"'
+    cache_headers = {
+        "Cache-Control": "private, no-cache",
+        "ETag": etag,
+        "Vary": "Origin",
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=cache_headers)
+
+    for name, value in cache_headers.items():
+        response.headers[name] = value
+
+    return {
+        "asset": asset.lower(),
+        "revision": revision,
+        "generatedAt": snapshot.get("generated_at"),
+        "collections": snapshot.get("collections", {}),
+        "missingRoutes": missing_routes,
+        **payload,
+    }
+
+
 @app.get("/{full_path:path}")
 def snapshot_compatibility_route(full_path: str):
     """
@@ -1190,15 +1303,6 @@ def snapshot_compatibility_route(full_path: str):
     # Manual overrides should remain immediately visible on /metrics rather
     # than waiting for the next collector cycle.
     if path == "/metrics" and isinstance(value, dict):
-        overrides = _load_overrides()
-        if overrides:
-            value = dict(value)
-            for key, override in overrides.items():
-                if key in value and isinstance(value[key], dict):
-                    value[key] = {
-                        **value[key],
-                        **override,
-                        "_is_override": True,
-                    }
+        value = _apply_btc_metric_overrides(value)
 
     return value

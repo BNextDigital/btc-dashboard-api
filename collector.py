@@ -116,6 +116,11 @@ ROUTE_GROUPS = {
     "slow": SLOW_ROUTES,
 }
 
+# A checkpoint after every route repeatedly rewrites the complete snapshot.
+# Preserve early-primary and end-of-run recovery points while batching the
+# remaining progress into a handful of durable writes.
+CHECKPOINT_EVERY_ROUTES = 5
+
 
 def _dedupe(*groups: tuple[str, ...]) -> tuple[str, ...]:
     seen: set[str] = set()
@@ -379,20 +384,30 @@ async def collect(mode: str) -> dict[str, Any]:
         f"[collector:{mode}] collecting {len(selected)}/{len(selected_paths)} routes"
     )
 
-    for path, route in selected:
+    completed_since_checkpoint = 0
+
+    for index, (path, route) in enumerate(selected):
         route_started = time.time()
         try:
             route_updates[path] = await _invoke(route)
+            completed_since_checkpoint += 1
             elapsed = time.time() - route_started
             print(f"[collector:{mode}] OK {path} ({elapsed:.2f}s)")
-            _publish_checkpoint(
-                mode=mode,
-                route_updates=route_updates,
-                errors=errors,
-                generated_at=generated_at,
-                started=started,
-                last_completed_route=path,
+            should_checkpoint = (
+                path == "/metrics"
+                or completed_since_checkpoint >= CHECKPOINT_EVERY_ROUTES
+                or index == len(selected) - 1
             )
+            if should_checkpoint:
+                _publish_checkpoint(
+                    mode=mode,
+                    route_updates=route_updates,
+                    errors=errors,
+                    generated_at=generated_at,
+                    started=started,
+                    last_completed_route=path,
+                )
+                completed_since_checkpoint = 0
         except Exception as exc:
             errors[path] = f"{type(exc).__name__}: {exc}"
             print(f"[collector:{mode}] ERROR {path}: {errors[path]}")

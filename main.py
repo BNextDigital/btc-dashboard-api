@@ -25,6 +25,8 @@ from etf_aum_routes import etf_aum_router
 from leading_routes import leading_router
 from shared.yf_cache import get_series as _yf
 from shared.fred_cache import flush as _flush_fred, status as _fred_status
+from shared.cg_cache import get_asset_market, get_global
+from shared.snapshot_store import get_snapshot_route
 from sol_routes import sol_router
 from eth_routes import eth_router
 from etf_flows_routes import etf_flows_router
@@ -368,20 +370,8 @@ init_history_db()
 
 def fetch_stablecoin_supply() -> dict:
     try:
-        data = _cached_get(
-            f"{COINGECKO_BASE}/simple/price",
-            _coingecko_headers(),
-            {
-                "ids":               "tether,usd-coin",
-                "vs_currencies":     "usd",
-                "include_market_cap": "true",
-            },
-        )
-        if not data:
-            return {"stablecoin_supply": None}
-
-        usdt = data.get("tether",   {}).get("usd_market_cap", 0)
-        usdc = data.get("usd-coin", {}).get("usd_market_cap", 0)
+        usdt = get_asset_market("tether").get("market_cap", 0)
+        usdc = get_asset_market("usd-coin").get("market_cap", 0)
 
         if not usdt and not usdc:
             return {"stablecoin_supply": None}
@@ -535,15 +525,10 @@ def format_stablecoin_supply(usdt: float, usdc: float, **kwargs) -> dict:
 
 def fetch_btc_dominance() -> dict:
     try:
-        data = _cached_get(
-            f"{COINGECKO_BASE}/global",
-            _coingecko_headers(),
-            {},
-        )
-        if not data or "data" not in data:
+        gd = get_global()
+        if not gd:
             return {"btc_dominance": None}
 
-        gd              = data["data"]
         dominance_pct   = gd.get("market_cap_percentage", {}).get("btc", 0)
         total_cap       = gd.get("total_market_cap", {}).get("usd", 0)
         btc_cap         = total_cap * (dominance_pct / 100) if total_cap else 0
@@ -1359,15 +1344,16 @@ def health():
 
 @app.get("/price")
 def get_price():
-    data = _cached_get(
-        f"{COINGECKO_BASE}/simple/price",
-        _coingecko_headers(),
-        {"ids": "bitcoin", "vs_currencies": "usd", "include_24hr_change": "true"},
-    )
-    if data and "bitcoin" in data:
-        price      = data["bitcoin"]["usd"]
-        change_24h = data["bitcoin"]["usd_24h_change"]
-        return {"price": f"${price:,.0f}", "change_24h": f"{change_24h:+.2f}%"}
+    data = get_asset_market("bitcoin")
+    price = data.get("current_price")
+    change_24h = data.get("price_change_percentage_24h_in_currency")
+    if price is not None:
+        return {
+            "price": f"${price:,.0f}",
+            "change_24h": (
+                f"{change_24h:+.2f}%" if change_24h is not None else "—"
+            ),
+        }
     return {"price": "—", "change_24h": "—"}
 
 
@@ -1967,10 +1953,43 @@ def get_cache_status():
 def get_btc_premium():
     """
     North American BTC Premium (Coinbase vs Binance).
-    Computed from shared/cg_cache.py — modular pair registry in PREMIUM_PAIRS.
+    Reuses the spot books already collected by /liquidity/depth. CoinGecko's
+    exchange tickers remain a fallback when either venue book is unavailable.
     """
-    from shared.cg_cache import get_north_american_premium
-    data = get_north_american_premium()
+    depth = get_snapshot_route("/liquidity/depth")
+    mid_prices = {}
+    if isinstance(depth, dict):
+        try:
+            depth_updated = datetime.fromisoformat(
+                str(depth.get("updated_at", "")).replace("Z", "+00:00")
+            )
+            depth_age = (
+                datetime.now(timezone.utc) - depth_updated
+            ).total_seconds()
+            if depth_age <= 10 * 60:
+                mid_prices = depth.get("venue_mid_prices", {})
+        except (TypeError, ValueError):
+            pass
+    onshore_price = mid_prices.get("Coinbase")
+    offshore_label = "Binance" if mid_prices.get("Binance") else "OKX"
+    offshore_price = mid_prices.get(offshore_label)
+
+    if onshore_price is not None and offshore_price:
+        premium_usd = float(onshore_price) - float(offshore_price)
+        premium_pct = premium_usd / float(offshore_price) * 100
+        data = {
+            "premium_usd": round(premium_usd, 2),
+            "premium_bps": round(premium_pct * 100, 2),
+            "premium_pct": round(premium_pct, 4),
+            "onshore_price": round(float(onshore_price), 2),
+            "offshore_price": round(float(offshore_price), 2),
+            "onshore_label": "Coinbase",
+            "offshore_label": offshore_label,
+            "source": "liquidity depth venue mid-prices",
+        }
+    else:
+        from shared.cg_cache import get_north_american_premium
+        data = get_north_american_premium()
 
     if data.get("premium_usd") is None:
         return {

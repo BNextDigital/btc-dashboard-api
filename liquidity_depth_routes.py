@@ -538,6 +538,7 @@ def _aggregate_depth(books: list[dict], spot_price: float) -> dict:
             for band in bands_pct
         },
         "venue_totals": {},
+        "venue_mid_prices": {},
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -548,6 +549,13 @@ def _aggregate_depth(books: list[dict], spot_price: float) -> dict:
         venue = book["venue"]
         venue_bid_2pct = 0.0
         venue_ask_2pct = 0.0
+
+        bids = book.get("bids", [])
+        asks = book.get("asks", [])
+        if bids and asks:
+            result["venue_mid_prices"][venue] = (
+                float(bids[0][0]) + float(asks[0][0])
+            ) / 2
 
         for price, qty in book.get("bids", []):
             drop_pct = (spot_price - price) / spot_price
@@ -1150,6 +1158,10 @@ def _build_depth_assessment(
                 ),
             }
             for venue, totals in agg["venue_totals"].items()
+        },
+        "venue_mid_prices": {
+            venue: round(price, 2)
+            for venue, price in agg["venue_mid_prices"].items()
         },
 
         "updated_at": datetime.now(timezone.utc).isoformat(),

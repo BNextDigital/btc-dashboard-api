@@ -42,7 +42,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from shared.cg_cache import (
-    cg_request as _cg_shared,
+    get_asset_market as _cg_market,
+    get_market_chart as _cg_market_chart,
     get_global as _cg_global,
     get_weighted_funding_oi as _cg_derivs,
 )
@@ -294,86 +295,29 @@ def _sum_nested_numeric(value) -> Optional[float]:
     return None
 
 
-# ── CoinGecko helpers ─────────────────────────────────────────────────────────
-
-def _cg(
-    path: str,
-    params: Optional[dict] = None,
-):
-    return _cg_shared(path, params)
-
-
 def fetch_sol_market() -> dict:
-    data = _cg(
-        "/coins/solana",
-        {
-            "localization": "false",
-            "tickers": "false",
-            "market_data": "true",
-            "community_data": "false",
-            "developer_data": "false",
-            "sparkline": "false",
-        },
-    )
-
-    if not isinstance(data, dict):
-        return {}
-
-    market_data = data.get("market_data")
-    if not isinstance(market_data, dict):
+    market_data = _cg_market("solana")
+    if not market_data:
         return {}
 
     return {
-        "price_usd": _safe_float(
-            market_data.get(
-                "current_price",
-                {},
-            ).get("usd")
-        ),
+        "price_usd": _safe_float(market_data.get("current_price")),
         "change_24h": _safe_float(
-            market_data.get(
-                "price_change_percentage_24h"
-            )
+            market_data.get("price_change_percentage_24h_in_currency")
         ),
         "change_7d": _safe_float(
-            market_data.get(
-                "price_change_percentage_7d"
-            )
+            market_data.get("price_change_percentage_7d_in_currency")
         ),
         "change_30d": _safe_float(
-            market_data.get(
-                "price_change_percentage_30d"
-            )
+            market_data.get("price_change_percentage_30d_in_currency")
         ),
-        "volume_24h": _safe_float(
-            market_data.get(
-                "total_volume",
-                {},
-            ).get("usd")
-        ),
-        "market_cap": _safe_float(
-            market_data.get(
-                "market_cap",
-                {},
-            ).get("usd")
-        ),
+        "volume_24h": _safe_float(market_data.get("total_volume")),
+        "market_cap": _safe_float(market_data.get("market_cap")),
         "circulating_supply": _safe_float(
-            market_data.get(
-                "circulating_supply"
-            )
+            market_data.get("circulating_supply")
         ),
-        "ath": _safe_float(
-            market_data.get(
-                "ath",
-                {},
-            ).get("usd")
-        ),
-        "ath_change_pct": _safe_float(
-            market_data.get(
-                "ath_change_percentage",
-                {},
-            ).get("usd")
-        ),
+        "ath": _safe_float(market_data.get("ath")),
+        "ath_change_pct": _safe_float(market_data.get("ath_change_percentage")),
         "source": "CoinGecko",
     }
 
@@ -386,14 +330,7 @@ def fetch_sol_market_chart(
 
     The old route used OHLC closing prices as if they were historical volume.
     """
-    data = _cg(
-        "/coins/solana/market_chart",
-        {
-            "vs_currency": "usd",
-            "days": str(days),
-            "interval": "daily",
-        },
-    )
+    data = _cg_market_chart("solana", days)
 
     if not isinstance(data, dict):
         return {

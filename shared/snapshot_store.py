@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,13 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 SNAPSHOT_PATH = Path(
     os.getenv("SNAPSHOT_PATH", str(DATA_DIR / "latest_snapshot.json"))
 )
+
+_snapshot_cache_lock = threading.Lock()
+_snapshot_cache: dict[str, Any] = {
+    "mtime_ns": None,
+    "size": None,
+    "data": None,
+}
 
 
 def snapshot_path() -> Path:
@@ -38,11 +46,33 @@ def snapshot_age_seconds() -> float | None:
 
 def load_snapshot() -> dict[str, Any] | None:
     try:
-        with SNAPSHOT_PATH.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except (OSError, json.JSONDecodeError):
+        stat = SNAPSHOT_PATH.stat()
+    except OSError:
         return None
+
+    with _snapshot_cache_lock:
+        if (
+            _snapshot_cache["data"] is not None
+            and _snapshot_cache["mtime_ns"] == stat.st_mtime_ns
+            and _snapshot_cache["size"] == stat.st_size
+        ):
+            return _snapshot_cache["data"]
+
+        try:
+            with SNAPSHOT_PATH.open("r", encoding="utf-8") as snapshot_file:
+                data = json.load(snapshot_file)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        _snapshot_cache.update({
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+            "data": data,
+        })
+        return data
 
 
 def get_snapshot_route(path: str) -> Any:
@@ -75,6 +105,14 @@ def write_snapshot_atomic(data: dict[str, Any]) -> Path:
             os.fsync(f.fileno())
 
         os.replace(tmp_path, SNAPSHOT_PATH)
+
+        stat = SNAPSHOT_PATH.stat()
+        with _snapshot_cache_lock:
+            _snapshot_cache.update({
+                "mtime_ns": stat.st_mtime_ns,
+                "size": stat.st_size,
+                "data": data,
+            })
 
         # Best-effort directory fsync so the rename is durable on Linux.
         try:

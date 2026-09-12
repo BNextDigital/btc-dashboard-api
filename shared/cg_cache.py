@@ -38,7 +38,11 @@ SETUP:
 """
 
 from __future__ import annotations
-import os, time, threading
+import json
+import os
+import threading
+import time
+from pathlib import Path
 import requests
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -52,6 +56,34 @@ _lock   = threading.Lock()   # FastAPI is threaded; lock prevents duplicate fetc
 
 _derivatives_cache: dict = {"data": None, "ts": 0.0}
 _global_cache:      dict = {"data": None, "ts": 0.0}
+_markets_cache:     dict = {"data": None, "ts": 0.0}
+
+MARKET_ASSET_IDS = (
+    "bitcoin",
+    "ethereum",
+    "solana",
+    "tether",
+    "usd-coin",
+)
+
+HISTORY_TTL = max(
+    3600,
+    int(os.getenv("COINGECKO_HISTORY_TTL_SECONDS", "14400")),
+)
+GLOBAL_TTL = max(
+    900,
+    int(os.getenv("COINGECKO_GLOBAL_TTL_SECONDS", "3600")),
+)
+_history_cache_path = Path(
+    os.getenv(
+        "COINGECKO_HISTORY_CACHE_PATH",
+        str(
+            Path(os.getenv("DATA_DIR", "/app/data"))
+            / "coingecko_history_cache.json"
+        ),
+    )
+)
+_history_cache: dict[str, dict] | None = None
 
 
 # ── Shared HTTP helper ────────────────────────────────────────────────────────
@@ -81,6 +113,132 @@ def cg_request(path: str, params: dict = None) -> dict | list:
         print(f"[cg_cache] HTTP {r.status_code} for {path} — {r.text[:120]}")
         r.raise_for_status()
     return r.json()
+
+
+# ── /coins/markets — shared current state across dashboard assets ───────────
+
+def get_asset_markets() -> dict[str, dict]:
+    """Fetch BTC, ETH, SOL, USDT and USDC current state in one request."""
+    now = time.time()
+
+    with _lock:
+        if (
+            _markets_cache["data"] is not None
+            and now - _markets_cache["ts"] < TTL
+        ):
+            return _markets_cache["data"]
+
+        try:
+            response = cg_request(
+                "/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "ids": ",".join(MARKET_ASSET_IDS),
+                    "price_change_percentage": "24h,7d,30d",
+                    "sparkline": "false",
+                },
+            )
+            if not isinstance(response, list):
+                raise ValueError(f"unexpected response type: {type(response)}")
+
+            data = {
+                str(row.get("id")): row
+                for row in response
+                if isinstance(row, dict) and row.get("id")
+            }
+            _markets_cache["data"] = data
+            _markets_cache["ts"] = now
+            print(f"[cg_cache] asset markets refreshed — {len(data)} assets")
+            return data
+        except Exception as exc:
+            print(f"[cg_cache] asset markets fetch error: {exc}")
+            if _markets_cache["data"] is not None:
+                age = int(now - _markets_cache["ts"])
+                print(f"[cg_cache] returning stale asset markets (age {age}s)")
+                return _markets_cache["data"]
+            return {}
+
+
+def get_asset_market(asset_id: str) -> dict:
+    """Return one asset from the shared multi-asset market response."""
+    value = get_asset_markets().get(asset_id, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _load_history_cache() -> dict[str, dict]:
+    global _history_cache
+    if _history_cache is not None:
+        return _history_cache
+
+    try:
+        with _history_cache_path.open("r", encoding="utf-8") as cache_file:
+            data = json.load(cache_file)
+        _history_cache = data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        _history_cache = {}
+
+    return _history_cache
+
+
+def _write_history_cache(data: dict[str, dict]) -> None:
+    _history_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = _history_cache_path.with_name(
+        f".{_history_cache_path.name}.{os.getpid()}.tmp"
+    )
+    try:
+        with tmp_path.open("w", encoding="utf-8") as cache_file:
+            json.dump(data, cache_file, ensure_ascii=False, separators=(",", ":"))
+            cache_file.flush()
+            os.fsync(cache_file.fileno())
+        os.replace(tmp_path, _history_cache_path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def get_market_chart(asset_id: str, days: int = 30) -> dict:
+    """
+    Return a daily market chart with a disk-backed four-hour cache.
+
+    Collector processes are intentionally disposable, so an in-memory TTL
+    alone would refetch these mostly-daily series every 15 minutes.
+    """
+    now = time.time()
+    key = f"market_chart:{asset_id}:{days}"
+
+    with _lock:
+        cache = _load_history_cache()
+        cached = cache.get(key, {})
+        if (
+            isinstance(cached, dict)
+            and isinstance(cached.get("data"), dict)
+            and now - float(cached.get("ts", 0)) < HISTORY_TTL
+        ):
+            return cached["data"]
+
+        try:
+            response = cg_request(
+                f"/coins/{asset_id}/market_chart",
+                params={
+                    "vs_currency": "usd",
+                    "days": str(days),
+                    "interval": "daily",
+                },
+            )
+            if not isinstance(response, dict):
+                raise ValueError(f"unexpected response type: {type(response)}")
+
+            cache[key] = {"data": response, "ts": now}
+            _write_history_cache(cache)
+            print(f"[cg_cache] {asset_id} {days}d market chart refreshed")
+            return response
+        except Exception as exc:
+            print(f"[cg_cache] {asset_id} market chart fetch error: {exc}")
+            stale = cached.get("data") if isinstance(cached, dict) else None
+            return stale if isinstance(stale, dict) else {}
 
 
 # ── /derivatives — shared across BTC, ETH, SOL ───────────────────────────────
@@ -171,7 +329,7 @@ def get_weighted_funding_oi(coin: str) -> dict:
 
 def get_global() -> dict:
     """
-    CoinGecko /global market data, cached for TTL seconds.
+    CoinGecko /global market data, cached across collector processes.
     Returns the inner `data` dict directly.
 
     Key fields:
@@ -192,17 +350,34 @@ def get_global() -> dict:
     with _lock:
         if _global_cache["data"] is not None and now - _global_cache["ts"] < TTL:
             return _global_cache["data"]
+
+        cache = _load_history_cache()
+        cached = cache.get("global", {})
+        if (
+            isinstance(cached, dict)
+            and isinstance(cached.get("data"), dict)
+            and now - float(cached.get("ts", 0)) < GLOBAL_TTL
+        ):
+            _global_cache["data"] = cached["data"]
+            _global_cache["ts"] = now
+            return cached["data"]
+
         try:
             resp = cg_request("/global")
             data = resp.get("data", {}) if isinstance(resp, dict) else {}
             _global_cache["data"] = data
             _global_cache["ts"]   = now
+            cache["global"] = {"data": data, "ts": now}
+            _write_history_cache(cache)
             print("[cg_cache] global refreshed")
             return data
         except Exception as e:
             print(f"[cg_cache] global fetch error: {e}")
             if _global_cache["data"] is not None:
                 return _global_cache["data"]
+            stale = cached.get("data") if isinstance(cached, dict) else None
+            if isinstance(stale, dict):
+                return stale
             return {}
 
 
