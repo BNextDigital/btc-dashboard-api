@@ -36,6 +36,18 @@ FAST_ROUTES = (
     "/causal",
     "/liquidity/depth",
 
+    "/sol/metrics",
+    "/sol/price",
+    "/sol/summary",
+    "/sol/tvl",
+    "/sol/ousd-status",
+
+    "/eth/metrics",
+    "/eth/price",
+    "/eth/summary",
+    "/eth/tvl",
+    "/eth/structural",
+
     # Leading indicators whose own source TTL is 15 minutes.
     "/leading/options",
     "/leading/coinbase-premium",
@@ -45,19 +57,7 @@ FAST_ROUTES = (
     # /liquidity/depth and CME basis snapshots without another external fetch.
     "/derivatives/pressure",
 
-    # SOL — live crypto / DeFi state.
-    "/sol/metrics",
-    "/sol/price",
-    "/sol/summary",
-    "/sol/tvl",
-    "/sol/ousd-status",
 
-    # ETH — live crypto / DeFi state.
-    "/eth/metrics",
-    "/eth/price",
-    "/eth/summary",
-    "/eth/tvl",
-    "/eth/structural",
 
     # Rate-limit-prone extras go last so they cannot block core dashboard state.
     "/btc-premium",
