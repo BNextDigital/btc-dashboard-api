@@ -39,7 +39,7 @@ FRED series used:
     RSAFS       — Retail sales (monthly)
     UMCSENT     — U Michigan consumer sentiment (monthly)
     MICH        — U Michigan inflation expectations (monthly)
-    NAPM        — ISM Manufacturing PMI (monthly) [if available]
+    ISM PMI     — temporarily unavailable from FRED; excluded from live backend
 
 Setup:
   1. Existing FRED_API_KEY env var (same key as macro_routes.py)
@@ -94,7 +94,6 @@ FRED_SERIES = {
     "retail":    ("RSAFS",         "monthly",   "millions"),
     "sentiment": ("UMCSENT",       "monthly",   "index"),
     "inf_exp":   ("MICH",          "monthly",   "pct"),     # 1Y inflation expectations
-    "mcumfn":       ("MCUMFN",          "monthly",   "index"),   # ISM manufacturing PMI
 }
 
 # ── City/pipe metaphor labels ─────────────────────────────────────────────────
@@ -154,20 +153,20 @@ def _fred(series_id: str, n_obs: int = 60) -> list[tuple[str, float]]:
                 pass
         return result
     except requests.HTTPError as e:
-      status = (
-          e.response.status_code
-          if e.response is not None
-          else "unknown"
-      )
-      print(f"[growth] FRED {series_id}: HTTP {status}")
-      return []
+        status = (
+            e.response.status_code
+            if e.response is not None
+            else "unknown"
+        )
+        print(f"[growth] FRED {series_id}: HTTP {status}")
+        return []
 
     except Exception as e:
         print(
             f"[growth] FRED {series_id}: "
             f"{type(e).__name__}"
         )
-      return []
+        return []
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -820,7 +819,6 @@ def _build_metrics() -> dict:
         "payrolls":  N_MONTHLY, "unrate":     N_MONTHLY, "claims":    N_WEEKLY,
         "cont_claims": N_WEEKLY,"jolts":      N_MONTHLY, "gdp":       N_QUARTERLY,
         "retail":    N_MONTHLY, "sentiment":  N_MONTHLY, "inf_exp":   N_MONTHLY,
-        "ism":       N_MONTHLY,
     }
 
     for key, (series_id, freq, unit) in FRED_SERIES.items():
@@ -859,7 +857,6 @@ def _build_metrics() -> dict:
         "retail":      _employment_card("retail",      obs["retail"],      native_unit=FRED_SERIES["retail"][2]),
         "sentiment":   _employment_card("sentiment",   obs["sentiment"],   native_unit=FRED_SERIES["sentiment"][2]),
         "inf_exp":     _employment_card("inf_exp",     obs["inf_exp"],     native_unit=FRED_SERIES["inf_exp"][2]),
-        "ism":         _employment_card("ism",         obs["ism"],         native_unit=FRED_SERIES["ism"][2]),
     }
 
     # ── Assessments ──
@@ -891,7 +888,7 @@ def _build_metrics() -> dict:
 def get_growth_metrics():
     """
     Returns inflation metrics (CPI, PCE, PPI, wages, breakevens, rent, energy)
-    + growth metrics (payrolls, unemployment, claims, GDP, ISM, retail, sentiment)
+    + growth metrics (payrolls, unemployment, claims, GDP, retail, sentiment)
     + pipe temperature assessment + city income assessment.
     """
     return _build_metrics()
