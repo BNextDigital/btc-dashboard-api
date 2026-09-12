@@ -137,12 +137,7 @@ DEFAULT_GROUPS: dict[str, dict[str, Any]] = {
         "series": ["UMCSENT", "MICH"],
         "time_et": "10:00",
     },
-    "ism": {
-        "label": "ISM Manufacturing",
-        "anchor": "NAPM",
-        "series": ["NAPM"],
-        "time_et": "10:00",
-    },
+    
 }
 
 
