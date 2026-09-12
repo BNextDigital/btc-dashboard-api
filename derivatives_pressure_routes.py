@@ -768,17 +768,168 @@ def _primary_state(
     }
 
 
-def _basis_context() -> dict:
+def _parse_percent_value(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return _safe_float(value)
+
+    try:
+        cleaned = (
+            str(value)
+            .strip()
+            .replace("%", "")
+            .replace(",", "")
+        )
+        return _safe_float(cleaned)
+    except Exception:
+        return None
+
+
+def _basis_context(
+    perp_annualized_pct: Optional[float],
+) -> dict:
+    """
+    Compare current perpetual funding carry with the existing CME basis snapshot.
+
+    The comparison is deliberately qualitative. Perpetual funding and a dated
+    CME futures basis are different instruments/tenors, so the spread is useful
+    as a structure diagnostic rather than an arbitrage-equivalent P&L measure.
+    """
     basis = get_snapshot_route("/leading/basis-enhanced")
-    if not isinstance(basis, dict):
-        return {"status": "unavailable"}
+    if not isinstance(basis, dict) or basis.get("error"):
+        return {
+            "status": "unavailable",
+            "source": "CME futures basis snapshot",
+        }
+
+    cme_annualized_pct = _parse_percent_value(
+        basis.get("annualized")
+    )
+
+    spread_vs_perp_pp = None
+    if (
+        perp_annualized_pct is not None
+        and cme_annualized_pct is not None
+    ):
+        spread_vs_perp_pp = (
+            perp_annualized_pct - cme_annualized_pct
+        )
+
+    regime_code = "comparison_unavailable"
+    regime_label = "Carry comparison unavailable"
+    interpretation = (
+        "CME basis is available, but the current perp carry "
+        "cannot be compared cleanly."
+    )
+
+    if cme_annualized_pct is not None:
+        if cme_annualized_pct < 0:
+            regime_code = "cme_backwardation"
+            regime_label = "CME Backwardation"
+            interpretation = (
+                "CME futures are below spot on an annualized basis. "
+                "Regulated futures carry is stressed rather than rich."
+            )
+
+        elif perp_annualized_pct is None:
+            regime_code = "cme_only"
+            regime_label = "CME Carry Available"
+            interpretation = (
+                "CME basis is available, but perp carry is missing."
+            )
+
+        elif (
+            perp_annualized_pct < 0
+            and cme_annualized_pct >= 5
+        ):
+            regime_code = "perp_short_cme_contango"
+            regime_label = "Perp Shorts · CME Carry Intact"
+            interpretation = (
+                "Perpetual funding is negative while CME remains "
+                "in positive contango. Crypto-native positioning is "
+                "short-skewed while regulated futures carry remains positive."
+            )
+
+        elif (
+            perp_annualized_pct >= 15
+            and cme_annualized_pct >= 10
+        ):
+            regime_code = "broad_carry_rich"
+            regime_label = "Broad Carry Rich"
+            interpretation = (
+                "Both perpetual funding and CME annualized basis are elevated. "
+                "Leverage/carry pricing is rich across crypto-native and "
+                "regulated futures venues."
+            )
+
+        elif (
+            spread_vs_perp_pp is not None
+            and spread_vs_perp_pp >= 5
+        ):
+            regime_code = "perps_richer"
+            regime_label = "Perps Richer Than CME"
+            interpretation = (
+                "Perpetual funding is materially richer than CME basis. "
+                "Current leverage pressure is more concentrated in perps "
+                "than in regulated futures."
+            )
+
+        elif (
+            spread_vs_perp_pp is not None
+            and spread_vs_perp_pp <= -5
+        ):
+            regime_code = "cme_richer"
+            regime_label = "CME Richer Than Perps"
+            interpretation = (
+                "CME basis is materially richer than perpetual funding. "
+                "Regulated futures carry is stronger than current perp carry."
+            )
+
+        else:
+            regime_code = "carry_aligned"
+            regime_label = "Carry Broadly Aligned"
+            interpretation = (
+                "Perpetual funding and CME basis are broadly aligned. "
+                "Neither venue is carrying a large relative premium."
+            )
 
     return {
-        "status": "available" if not basis.get("error") else "unavailable",
+        "status": "available",
         "annualized": basis.get("annualized"),
+        "cme_annualized_pct": (
+            round(cme_annualized_pct, 2)
+            if cme_annualized_pct is not None
+            else None
+        ),
+        "perp_annualized_pct": (
+            round(perp_annualized_pct, 2)
+            if perp_annualized_pct is not None
+            else None
+        ),
+        "spread_vs_perp_pp": (
+            round(spread_vs_perp_pp, 2)
+            if spread_vs_perp_pp is not None
+            else None
+        ),
+        "raw_basis": basis.get("raw_basis"),
+        "days_to_exp": basis.get("days_to_exp"),
+        "futures_px": basis.get("futures_px"),
+        "spot_px": basis.get("spot_px"),
         "trend_5d": basis.get("trend_5d"),
+        "trend_note": basis.get("trend_note"),
         "pattern": basis.get("pattern"),
         "alert": basis.get("alert"),
+        "alert_level": basis.get("alert_level"),
+        "regime_code": regime_code,
+        "regime_label": regime_label,
+        "interpretation": interpretation,
+        "comparison_note": (
+            "Perp funding and dated CME basis are different carry structures; "
+            "their spread is a positioning diagnostic, not a like-for-like "
+            "arbitrage return."
+        ),
         "source": "CME futures basis snapshot",
     }
 
@@ -1044,7 +1195,9 @@ def _build_pressure() -> dict:
             ),
         },
 
-        "basis_context": _basis_context(),
+        "basis_context": _basis_context(
+            annualized_pct,
+        ),
 
         "data_quality": {
             "status": quality,
