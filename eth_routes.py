@@ -57,11 +57,14 @@ ETH_TVL_DB_PATH = DATA_DIR / "eth_tvl_history.db"
 ETH_OVERRIDES = DATA_DIR / "eth_overrides.json"
 
 DEFILLAMA_BASE = "https://api.llama.fi"
-BEACON_BASE = "https://beaconcha.in/api/v1"
 
 ETH_RPC_ENDPOINTS = [
     ("Cloudflare", "https://cloudflare-eth.com/v1/mainnet"),
     ("PublicNode", "https://ethereum-rpc.publicnode.com"),
+]
+
+ETH_BEACON_ENDPOINTS = [
+    ("PublicNode", "https://ethereum-beacon-api.publicnode.com"),
 ]
 
 L2_CHAIN_ALIASES = {
@@ -704,82 +707,84 @@ def fetch_eth_staking(
     circulating_supply: Optional[float],
 ) -> dict:
     """
-    Latest active validator count from beaconcha.in.
+    Current active effective stake from a public Lighthouse beacon endpoint.
 
-    Staked ETH is approximated as active validators × 32 ETH. Staking rate uses
-    current CoinGecko circulating supply rather than a fixed 120M assumption.
+    Lighthouse's aggregate validator-inclusion response exposes active stake
+    directly in Gwei. This avoids downloading the full validator registry and
+    avoids beaconcha.in's authenticated API. Staking rate uses current
+    CoinGecko circulating supply rather than a fixed supply assumption.
     """
-    try:
-        response = requests.get(
-            f"{BEACON_BASE}/epoch/latest",
-            timeout=10,
-        )
-        response.raise_for_status()
+    errors = []
 
-        payload = response.json()
-        data = payload.get("data", {})
+    for label, endpoint in ETH_BEACON_ENDPOINTS:
+        try:
+            head_response = requests.get(
+                f"{endpoint}/eth/v1/beacon/headers/head",
+                timeout=10,
+            )
+            head_response.raise_for_status()
 
-        if isinstance(data, list):
-            data = data[0] if data else {}
+            slot = int(
+                head_response.json()["data"]["header"]["message"]["slot"]
+            )
+            completed_epoch = max(0, slot // 32 - 1)
 
-        if not isinstance(data, dict):
-            raise ValueError(
-                "unexpected beaconcha.in response"
+            stake_response = requests.get(
+                (
+                    f"{endpoint}/lighthouse/validator_inclusion/"
+                    f"{completed_epoch}/global"
+                ),
+                timeout=15,
+            )
+            stake_response.raise_for_status()
+
+            active_gwei = _safe_float(
+                stake_response.json()
+                .get("data", {})
+                .get("current_epoch_active_gwei")
             )
 
-        validators = (
-            data.get("validatorscount")
-            or data.get("validatorsCount")
-            or data.get("validators_count")
-        )
+            if active_gwei is None or active_gwei <= 0:
+                raise ValueError("active effective stake unavailable")
 
-        if validators is None:
-            raise ValueError(
-                "validator count unavailable"
-            )
+            staked_eth = active_gwei / 1e9
+            staking_rate = None
 
-        validators = int(validators)
+            if (
+                circulating_supply is not None
+                and circulating_supply > 0
+            ):
+                staking_rate = (
+                    staked_eth
+                    / circulating_supply
+                    * 100
+                )
 
-        if validators <= 0:
-            raise ValueError(
-                "validator count unavailable"
-            )
+            return {
+                # Validator count is intentionally not inferred by dividing
+                # by 32: post-Pectra validators can consolidate above 32 ETH.
+                "active_validators": None,
+                "staked_eth": round(staked_eth / 1e6, 2),
+                "staking_rate_pct": (
+                    round(staking_rate, 2)
+                    if staking_rate is not None
+                    else None
+                ),
+                "staking_epoch": completed_epoch,
+                "source": f"{label} · Lighthouse active effective stake",
+            }
 
-        staked_eth = validators * 32.0
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
 
-        staking_rate = None
-        if (
-            circulating_supply is not None
-            and circulating_supply > 0
-        ):
-            staking_rate = (
-                staked_eth
-                / circulating_supply
-                * 100
-            )
-
-        return {
-            "active_validators": validators,
-            "staked_eth": round(
-                staked_eth / 1e6,
-                2,
-            ),
-            "staking_rate_pct": (
-                round(staking_rate, 2)
-                if staking_rate is not None
-                else None
-            ),
-            "source": "beaconcha.in",
-        }
-
-    except Exception as exc:
-        return {
-            "active_validators": None,
-            "staked_eth": None,
-            "staking_rate_pct": None,
-            "source": "beaconcha.in",
-            "error": str(exc),
-        }
+    return {
+        "active_validators": None,
+        "staked_eth": None,
+        "staking_rate_pct": None,
+        "staking_epoch": None,
+        "source": "public Ethereum beacon API",
+        "error": "; ".join(errors),
+    }
 
 
 # ── Gas price ─────────────────────────────────────────────────────────────────
@@ -2024,19 +2029,19 @@ def format_eth_staking(
     staking_rate = _safe_float(
         raw.get("staking_rate_pct")
     )
-    validators = raw.get(
-        "active_validators"
+    staked_eth = _safe_float(
+        raw.get("staked_eth")
     )
 
     if (
         staking_rate is None
-        or not validators
+        or staked_eth is None
     ):
         return _unavailable(
             "staking_rate",
             raw.get(
                 "source",
-                "beaconcha.in",
+                "public Ethereum beacon API",
             ),
             raw.get("error", ""),
         )
@@ -2075,12 +2080,16 @@ def format_eth_staking(
         "alert": alert,
         "level": level,
         "pattern": (
-            f"{int(validators):,} active validators · "
-            f"{raw.get('staked_eth', '—')}M ETH"
+            f"{staked_eth:.2f}M ETH active effective stake"
+            + (
+                f" · epoch {raw['staking_epoch']}"
+                if raw.get("staking_epoch") is not None
+                else ""
+            )
         ),
         "source": raw.get(
             "source",
-            "beaconcha.in",
+            "public Ethereum beacon API",
         ),
     }
 

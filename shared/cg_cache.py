@@ -67,10 +67,14 @@ def cg_request(path: str, params: dict = None) -> dict | list:
     Single CoinGecko request helper — auth, logging, raise on error.
     All route files should import this instead of defining their own.
     """
-    headers = {}
+    headers = {"User-Agent": "btc-dashboard/1.0"}
     key = os.getenv("COINGECKO_API_KEY", "")
     if key:
-        headers["x-cg-pro-api-key"] = key
+        # COINGECKO_API_KEY is the Demo key used throughout this project.
+        # Sending it as a Pro key leaves Railway on CoinGecko's anonymous
+        # shared-IP allowance, which is easily rate limited and blanks every
+        # ETH/SOL CoinGecko-backed metric at once.
+        headers["x-cg-demo-api-key"] = key
     r = requests.get(f"{CG_BASE}{path}", params=params or {}, headers=headers, timeout=15)
     if not r.ok:
         # 429 = rate limit. Callers handle stale-cache fallback.
