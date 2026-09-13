@@ -47,6 +47,7 @@ from shared.cg_cache import (
     get_global as _cg_global,
     get_weighted_funding_oi as _cg_derivs,
 )
+from shared.defillama_cache import get_json as _defillama_json
 from shared.yf_core_cache import get_series as _yf_core_series
 
 
@@ -426,13 +427,9 @@ def fetch_sol_dominance() -> dict:
 
 def fetch_sol_tvl() -> dict:
     try:
-        response = requests.get(
-            f"{DEFILLAMA_BASE}/v2/historicalChainTvl/Solana",
-            timeout=15,
+        history = _defillama_json(
+            f"{DEFILLAMA_BASE}/v2/historicalChainTvl/Solana"
         )
-        response.raise_for_status()
-
-        history = response.json()
 
         if not isinstance(history, list) or not history:
             return {
@@ -495,13 +492,7 @@ def fetch_sol_tvl() -> dict:
 
 def fetch_sol_protocol_breakdown() -> list[dict]:
     try:
-        response = requests.get(
-            f"{DEFILLAMA_BASE}/protocols",
-            timeout=15,
-        )
-        response.raise_for_status()
-
-        protocols = response.json()
+        protocols = _defillama_json(f"{DEFILLAMA_BASE}/protocols")
 
         if not isinstance(protocols, list):
             return []
@@ -549,13 +540,9 @@ def fetch_sol_protocol_breakdown() -> list[dict]:
 
 def fetch_sol_dex_volume() -> dict:
     try:
-        response = requests.get(
-            f"{DEFILLAMA_BASE}/overview/dexs/Solana",
-            timeout=15,
+        data = _defillama_json(
+            f"{DEFILLAMA_BASE}/overview/dexs/Solana"
         )
-        response.raise_for_status()
-
-        data = response.json()
 
         if not isinstance(data, dict):
             return {
@@ -595,13 +582,9 @@ def fetch_sol_stablecoin_supply() -> dict:
     error_parts = []
 
     try:
-        response = requests.get(
-            f"{DEFILLAMA_STABLES_BASE}/stablecoinchains",
-            timeout=15,
+        chains = _defillama_json(
+            f"{DEFILLAMA_STABLES_BASE}/stablecoinchains"
         )
-        response.raise_for_status()
-
-        chains = response.json()
 
         if isinstance(chains, list):
             solana = next(
@@ -629,13 +612,9 @@ def fetch_sol_stablecoin_supply() -> dict:
         )
 
     try:
-        response = requests.get(
-            f"{DEFILLAMA_STABLES_BASE}/stablecoincharts/Solana",
-            timeout=15,
+        history = _defillama_json(
+            f"{DEFILLAMA_STABLES_BASE}/stablecoincharts/Solana"
         )
-        response.raise_for_status()
-
-        history = response.json()
 
         if isinstance(history, list):
             for row in history[-90:]:

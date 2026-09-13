@@ -55,9 +55,9 @@ Endpoints:
 
 import os
 import time
-import requests
 from datetime import datetime, date, timedelta
 from fastapi import APIRouter
+from shared.fred_cache import get_series as _shared_fred_series
 
 # ── Router ────────────────────────────────────────────────────────────────────
 growth_router = APIRouter(prefix="/growth")
@@ -125,48 +125,12 @@ CITY_LABELS = {
 # ── FRED fetcher ──────────────────────────────────────────────────────────────
 
 def _fred(series_id: str, n_obs: int = 60) -> list[tuple[str, float]]:
-    """
-    Fetch last n_obs observations from FRED.
-    Returns [(date_str, float), ...] oldest-first, missing values skipped.
-    """
-    if not FRED_API_KEY:
-        return []
-    try:
-        r = requests.get(
-            FRED_BASE,
-            params={
-                "series_id":  series_id,
-                "api_key":    FRED_API_KEY,
-                "file_type":  "json",
-                "sort_order": "desc",
-                "limit":      n_obs,
-            },
-            timeout=12,
-        )
-        r.raise_for_status()
-        obs = r.json().get("observations", [])
-        result = []
-        for o in reversed(obs):   # oldest-first
-            try:
-                result.append((o["date"], float(o["value"])))
-            except (ValueError, KeyError):
-                pass
-        return result
-    except requests.HTTPError as e:
-        status = (
-            e.response.status_code
-            if e.response is not None
-            else "unknown"
-        )
-        print(f"[growth] FRED {series_id}: HTTP {status}")
-        return []
-
-    except Exception as e:
-        print(
-            f"[growth] FRED {series_id}: "
-            f"{type(e).__name__}"
-        )
-        return []
+    """Fetch release-sensitive growth data with persistent stale fallback."""
+    return _shared_fred_series(
+        series_id,
+        n_obs=n_obs,
+        force_refresh=True,
+    )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -43,6 +43,7 @@ from shared.cg_cache import (
     get_market_chart as _cg_market_chart,
     get_weighted_funding_oi as _cg_derivs,
 )
+from shared.defillama_cache import get_json as _defillama_json
 from shared.yf_core_cache import get_series as _yf_core_series
 
 
@@ -396,13 +397,9 @@ def fetch_eth_derivatives() -> dict:
 
 def fetch_eth_mainnet_tvl() -> dict:
     try:
-        response = requests.get(
-            f"{DEFILLAMA_BASE}/v2/historicalChainTvl/Ethereum",
-            timeout=15,
+        history = _defillama_json(
+            f"{DEFILLAMA_BASE}/v2/historicalChainTvl/Ethereum"
         )
-        response.raise_for_status()
-
-        history = response.json()
 
         if not isinstance(history, list) or not history:
             return {
@@ -465,13 +462,7 @@ def fetch_eth_mainnet_tvl() -> dict:
 
 def fetch_eth_protocol_breakdown() -> list[dict]:
     try:
-        response = requests.get(
-            f"{DEFILLAMA_BASE}/protocols",
-            timeout=15,
-        )
-        response.raise_for_status()
-
-        protocols = response.json()
+        protocols = _defillama_json(f"{DEFILLAMA_BASE}/protocols")
 
         if not isinstance(protocols, list):
             return []
@@ -519,13 +510,7 @@ def fetch_eth_protocol_breakdown() -> list[dict]:
 
 def fetch_eth_l2_tvl() -> dict:
     try:
-        response = requests.get(
-            f"{DEFILLAMA_BASE}/v2/chains",
-            timeout=15,
-        )
-        response.raise_for_status()
-
-        chains = response.json()
+        chains = _defillama_json(f"{DEFILLAMA_BASE}/v2/chains")
 
         if not isinstance(chains, list):
             return {
@@ -601,13 +586,9 @@ def fetch_eth_l2_tvl() -> dict:
 
 def fetch_eth_dex_volume() -> dict:
     try:
-        response = requests.get(
-            f"{DEFILLAMA_BASE}/overview/dexs/Ethereum",
-            timeout=15,
+        data = _defillama_json(
+            f"{DEFILLAMA_BASE}/overview/dexs/Ethereum"
         )
-        response.raise_for_status()
-
-        data = response.json()
 
         if not isinstance(data, dict):
             return {
