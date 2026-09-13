@@ -84,6 +84,18 @@ _history_cache_path = Path(
     )
 )
 _history_cache: dict[str, dict] | None = None
+_markets_cache_path = Path(
+    os.getenv(
+        "COINGECKO_MARKETS_CACHE_PATH",
+        str(Path(os.getenv("DATA_DIR", "/app/data")) / "coingecko_markets_cache.json"),
+    )
+)
+_derivatives_cache_path = Path(
+    os.getenv(
+        "COINGECKO_DERIVATIVES_CACHE_PATH",
+        str(Path(os.getenv("DATA_DIR", "/app/data")) / "coingecko_derivatives_cache.json"),
+    )
+)
 
 
 # ── Shared HTTP helper ────────────────────────────────────────────────────────
@@ -115,6 +127,37 @@ def cg_request(path: str, params: dict = None) -> dict | list:
     return r.json()
 
 
+def _read_endpoint_cache(path: Path) -> dict:
+    try:
+        with path.open("r", encoding="utf-8") as cache_file:
+            value = json.load(cache_file)
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_endpoint_cache(path: Path, data: dict | list, timestamp: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as cache_file:
+            json.dump(
+                {"data": data, "ts": timestamp},
+                cache_file,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            cache_file.flush()
+            os.fsync(cache_file.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
 # ── /coins/markets — shared current state across dashboard assets ───────────
 
 def get_asset_markets() -> dict[str, dict]:
@@ -127,6 +170,16 @@ def get_asset_markets() -> dict[str, dict]:
             and now - _markets_cache["ts"] < TTL
         ):
             return _markets_cache["data"]
+
+        cached = _read_endpoint_cache(_markets_cache_path)
+        if (
+            isinstance(cached, dict)
+            and isinstance(cached.get("data"), dict)
+            and now - float(cached.get("ts", 0)) < TTL
+        ):
+            _markets_cache["data"] = cached["data"]
+            _markets_cache["ts"] = float(cached["ts"])
+            return cached["data"]
 
         try:
             response = cg_request(
@@ -148,6 +201,7 @@ def get_asset_markets() -> dict[str, dict]:
             }
             _markets_cache["data"] = data
             _markets_cache["ts"] = now
+            _write_endpoint_cache(_markets_cache_path, data, now)
             print(f"[cg_cache] asset markets refreshed — {len(data)} assets")
             return data
         except Exception as exc:
@@ -156,6 +210,15 @@ def get_asset_markets() -> dict[str, dict]:
                 age = int(now - _markets_cache["ts"])
                 print(f"[cg_cache] returning stale asset markets (age {age}s)")
                 return _markets_cache["data"]
+            stale = cached.get("data") if isinstance(cached, dict) else None
+            if isinstance(stale, dict):
+                age = int(now - float(cached.get("ts", 0)))
+                print(f"[cg_cache] returning persisted asset markets (age {age}s)")
+                _markets_cache["data"] = stale
+                # Avoid retrying the failed provider once per downstream route
+                # during this collector process. The next process will retry.
+                _markets_cache["ts"] = now
+                return stale
             return {}
 
 
@@ -259,12 +322,24 @@ def get_derivatives() -> list[dict]:
     with _lock:
         if _derivatives_cache["data"] is not None and now - _derivatives_cache["ts"] < TTL:
             return _derivatives_cache["data"]
+
+        cached = _read_endpoint_cache(_derivatives_cache_path)
+        if (
+            isinstance(cached, dict)
+            and isinstance(cached.get("data"), list)
+            and now - float(cached.get("ts", 0)) < TTL
+        ):
+            _derivatives_cache["data"] = cached["data"]
+            _derivatives_cache["ts"] = float(cached["ts"])
+            return cached["data"]
+
         try:
             data = cg_request("/derivatives", params={"include_tickers": "unexpired"})
             if not isinstance(data, list):
                 raise ValueError(f"unexpected response type: {type(data)}")
             _derivatives_cache["data"] = data
             _derivatives_cache["ts"]   = now
+            _write_endpoint_cache(_derivatives_cache_path, data, now)
             print(f"[cg_cache] derivatives refreshed — {len(data)} tickers")
             return data
         except Exception as e:
@@ -273,6 +348,13 @@ def get_derivatives() -> list[dict]:
                 age = int(now - _derivatives_cache["ts"])
                 print(f"[cg_cache] returning stale derivatives (age {age}s)")
                 return _derivatives_cache["data"]
+            stale = cached.get("data") if isinstance(cached, dict) else None
+            if isinstance(stale, list):
+                age = int(now - float(cached.get("ts", 0)))
+                print(f"[cg_cache] returning persisted derivatives (age {age}s)")
+                _derivatives_cache["data"] = stale
+                _derivatives_cache["ts"] = now
+                return stale
             return []   # all callers handle empty list gracefully
 
 

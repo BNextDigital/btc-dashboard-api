@@ -58,6 +58,7 @@ import requests
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from fastapi import APIRouter
+from shared.snapshot_store import load_snapshot
 
 etf_flows_router = APIRouter(prefix="/etf-flows")
 
@@ -516,7 +517,17 @@ def _satoshi_to_btc(sats: int | None) -> float | None:
 
 
 def _btc_price() -> float | None:
-    """Lightweight spot price fetch from CoinGecko for USD conversion."""
+    """Reuse the latest collected spot-book price before a live fallback."""
+    try:
+        snapshot = load_snapshot()
+        routes = snapshot.get("routes", {}) if isinstance(snapshot, dict) else {}
+        depth = routes.get("/liquidity/depth", {}) if isinstance(routes, dict) else {}
+        price = _san(depth.get("spot_price_usd")) if isinstance(depth, dict) else None
+        if price and price > 0:
+            return price
+    except Exception as exc:
+        print(f"[etf-flows] snapshot BTC price unavailable: {exc}")
+
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/simple/price",
@@ -524,7 +535,8 @@ def _btc_price() -> float | None:
             timeout=8,
         )
         return float(r.json()["bitcoin"]["usd"])
-    except Exception:
+    except Exception as exc:
+        print(f"[etf-flows] live BTC price fallback failed: {exc}")
         return None
 
 # ── Caches ────────────────────────────────────────────────────────────────────

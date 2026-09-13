@@ -11,6 +11,7 @@ metric lookups) remains live and writable without loading the analytics stack.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -1201,6 +1202,23 @@ DASHBOARD_BUNDLE_ROUTES = {
         "tvl": "/sol/tvl",
         "signature": "/sol/ousd-status",
     },
+    "liquidity": {
+        "metrics": "/liquidity/metrics",
+        "yieldCurve": "/liquidity/yield-curve",
+    },
+    "etf-flows": {
+        "summary": "/etf-flows/summary",
+        "breakdown": "/etf-flows/breakdown",
+        "custody": "/etf-flows/custody",
+    },
+}
+
+DASHBOARD_BUNDLE_COLLECTIONS = {
+    "btc": ("fast", "market", "hourly"),
+    "eth": ("fast",),
+    "sol": ("fast",),
+    "liquidity": ("slow",),
+    "etf-flows": ("hourly",),
 }
 
 
@@ -1226,7 +1244,8 @@ def _apply_btc_metric_overrides(value):
 @app.get("/dashboard/{asset}")
 def get_dashboard_bundle(asset: str, request: Request, response: Response):
     """Return one page-ready payload instead of many snapshot route reads."""
-    route_map = DASHBOARD_BUNDLE_ROUTES.get(asset.lower())
+    asset_key = asset.lower()
+    route_map = DASHBOARD_BUNDLE_ROUTES.get(asset_key)
     if route_map is None:
         raise HTTPException(
             status_code=404,
@@ -1251,15 +1270,41 @@ def get_dashboard_bundle(asset: str, request: Request, response: Response):
             missing_routes.append(path)
             continue
         value = routes[path]
-        if asset.lower() == "btc" and key == "metrics":
+        if asset_key == "btc" and key == "metrics":
             value = _apply_btc_metric_overrides(value)
         payload[key] = value
 
-    revision = str(
-        snapshot.get("generated_at")
-        or snapshot.get("generated_unix")
-        or "unknown"
+    all_collections = snapshot.get("collections", {})
+    if not isinstance(all_collections, dict):
+        all_collections = {}
+    relevant_collections = {
+        mode: all_collections[mode]
+        for mode in DASHBOARD_BUNDLE_COLLECTIONS.get(asset_key, ())
+        if mode in all_collections
+    }
+    generated_at = max(
+        (
+            str(value.get("generated_at"))
+            for value in relevant_collections.values()
+            if isinstance(value, dict) and value.get("generated_at")
+        ),
+        default=str(snapshot.get("generated_at") or "unknown"),
     )
+    response_body = {
+        "asset": asset_key,
+        "generatedAt": generated_at,
+        "collections": relevant_collections,
+        "missingRoutes": missing_routes,
+        **payload,
+    }
+    revision = hashlib.sha256(
+        json.dumps(
+            response_body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()[:24]
     etag = f'W/"{revision}"'
     cache_headers = {
         "Cache-Control": "private, no-cache",
@@ -1272,14 +1317,7 @@ def get_dashboard_bundle(asset: str, request: Request, response: Response):
     for name, value in cache_headers.items():
         response.headers[name] = value
 
-    return {
-        "asset": asset.lower(),
-        "revision": revision,
-        "generatedAt": snapshot.get("generated_at"),
-        "collections": snapshot.get("collections", {}),
-        "missingRoutes": missing_routes,
-        **payload,
-    }
+    return {"revision": revision, **response_body}
 
 
 @app.get("/{full_path:path}")

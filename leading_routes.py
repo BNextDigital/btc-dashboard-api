@@ -45,6 +45,7 @@ from pathlib import Path
 from fastapi import APIRouter
 # At the top of leading_routes.py, add:
 from data_sources import get_shared_coingecko, COINGECKO_BASE, _coingecko_headers, _cached_get
+from shared.fred_cache import get_series as _shared_fred_series
 from shared.yf_core_cache import get_series as _yf
 leading_router = APIRouter(prefix="/leading")
 
@@ -228,30 +229,8 @@ def _pct_rank(values: list, current: float) -> int | None:
     return round(sum(1 for v in values if v < current) / len(values) * 100)
 
 def _fetch_fred(series_id: str, n_days: int = 365) -> list[tuple]:
-    """Returns [(date_str, float), ...] oldest→newest. Skips FRED '.' missing values."""
-    if not FRED_API_KEY:
-        return []
-    end   = date.today()
-    start = end - timedelta(days=n_days + 60)
-    try:
-        resp = requests.get(FRED_BASE, params={
-            "series_id":         series_id,
-            "observation_start": start.isoformat(),
-            "observation_end":   end.isoformat(),
-            "api_key":           FRED_API_KEY,
-            "file_type":         "json",
-        }, timeout=20)
-        resp.raise_for_status()
-        pairs = []
-        for o in resp.json().get("observations", []):
-            try:
-                pairs.append((o["date"], float(o["value"])))
-            except (ValueError, KeyError):
-                pass
-        return pairs
-    except Exception as e:
-        print(f"[leading] FRED {series_id} error: {e}")
-        return []
+    """Return oldest-first observations from the persistent shared cache."""
+    return _shared_fred_series(series_id, n_obs=n_days)
 
 
 # ════════════════════════════════════════════════════════════════════════════

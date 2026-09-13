@@ -33,6 +33,7 @@ import sqlite3
 import requests
 from datetime import datetime, date, timedelta, timezone
 from fastapi import APIRouter
+from shared.fred_cache import get_series as _shared_fred_series
 
 # ── Router ────────────────────────────────────────────────────────────────────
 liquidity_router = APIRouter(prefix="/liquidity")
@@ -136,39 +137,8 @@ def _fetch_history_rows(n_days: int = 90) -> list[dict]:
 # ── FRED fetcher ──────────────────────────────────────────────────────────────
 
 def _fred_series(series_id: str, n_obs: int = 120) -> list[tuple[str, float]]:
-    """
-    Returns [(date_str, value), ...] oldest-first, dropping missing values.
-    n_obs: number of observations to request (weekly series → ~2 years at 120)
-    """
-    if not FRED_API_KEY:
-        print(f"[liquidity] No FRED_API_KEY — {series_id} will be None")
-        return []
-    try:
-        r = requests.get(
-            FRED_BASE,
-            params={
-                "series_id":       series_id,
-                "api_key":         FRED_API_KEY,
-                "file_type":       "json",
-                "sort_order":      "desc",
-                "limit":           n_obs,
-                "observation_start": (date.today() - timedelta(days=n_obs * 10)).isoformat(),
-            },
-            timeout=12,
-        )
-        r.raise_for_status()
-        obs = r.json().get("observations", [])
-        result = []
-        for o in reversed(obs):   # oldest-first
-            try:
-                val = float(o["value"])
-                result.append((o["date"], val))
-            except (ValueError, KeyError):
-                pass   # "." = missing
-        return result
-    except Exception as e:
-        print(f"[liquidity] FRED fetch error {series_id}: {e}")
-        return []
+    """Return oldest-first observations from the persistent shared cache."""
+    return _shared_fred_series(series_id, n_obs=n_obs)
 
 # ── Formatters ────────────────────────────────────────────────────────────────
 

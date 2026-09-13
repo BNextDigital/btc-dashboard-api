@@ -41,10 +41,12 @@ TTL POLICY
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 import requests
@@ -53,6 +55,12 @@ import requests
 
 FRED_BASE    = "https://api.stlouisfed.org/fred/series/observations"
 FRED_API_KEY = os.getenv("FRED_API_KEY", "")
+FRED_CACHE_DIR = Path(
+    os.getenv(
+        "FRED_CACHE_DIR",
+        str(Path(os.getenv("DATA_DIR", "/app/data")) / "fred_cache"),
+    )
+)
 
 # ── Frequency type ────────────────────────────────────────────────────────────
 
@@ -168,6 +176,7 @@ def _get_entry(series_id: str) -> dict:
                 _cache[series_id] = {
                     "data": None,
                     "ts":   0.0,
+                    "requested_n": 0,
                     "lock": threading.Lock(),
                 }
     return _cache[series_id]
@@ -175,7 +184,12 @@ def _get_entry(series_id: str) -> dict:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def get_series(series_id: str, n_obs: int | None = None) -> list[tuple[str, float]]:
+def get_series(
+    series_id: str,
+    n_obs: int | None = None,
+    *,
+    force_refresh: bool = False,
+) -> list[tuple[str, float]]:
     """
     Return [(date_str, float), ...] oldest-first for a FRED series.
     Refreshes cache if stale based on the series' frequency TTL.
@@ -186,10 +200,15 @@ def get_series(series_id: str, n_obs: int | None = None) -> list[tuple[str, floa
         hy_oas = get_series("BAMLH0A0HYM2")
         breakeven_10y = get_series("T10YIE")
     """
-    return _get_or_refresh(series_id, n_obs)
+    return _get_or_refresh(series_id, n_obs, force_refresh=force_refresh)
 
 
-def get_series_df(series_id: str, n_obs: int | None = None):
+def get_series_df(
+    series_id: str,
+    n_obs: int | None = None,
+    *,
+    force_refresh: bool = False,
+):
     """
     Return a pd.Series(values, index=date_strings) for routes using pandas.
     Returns None if no data available.
@@ -200,7 +219,7 @@ def get_series_df(series_id: str, n_obs: int | None = None):
         s = get_series_df("DGS10")   # pd.Series of 10Y yield
     """
     import pandas as pd
-    obs = _get_or_refresh(series_id, n_obs)
+    obs = _get_or_refresh(series_id, n_obs, force_refresh=force_refresh)
     if not obs:
         return None
     dates, vals = zip(*obs)
@@ -223,11 +242,22 @@ def flush(series_id: str | None = None) -> None:
             with entry["lock"]:
                 entry["data"] = None
                 entry["ts"]   = 0.0
+                entry["requested_n"] = 0
+        try:
+            _cache_path(series_id).unlink()
+        except OSError:
+            pass
     else:
         with _cache_lock:
             for entry in _cache.values():
                 entry["data"] = None
                 entry["ts"]   = 0.0
+                entry["requested_n"] = 0
+        try:
+            for path in FRED_CACHE_DIR.glob("*.json"):
+                path.unlink()
+        except OSError:
+            pass
 
 
 def status() -> dict:
@@ -272,25 +302,98 @@ def _default_n_obs(series_id: str) -> int:
     return N_OBS_BY_FREQ[freq]
 
 
-def _is_stale(entry: dict, series_id: str) -> bool:
-    return entry["data"] is None or (time.time() - entry["ts"]) > _ttl(series_id)
+def _is_stale(entry: dict, series_id: str, requested_n: int) -> bool:
+    return (
+        entry["data"] is None
+        or (time.time() - entry["ts"]) > _ttl(series_id)
+        or int(entry.get("requested_n", 0)) < requested_n
+    )
 
 
-def _get_or_refresh(series_id: str, n_obs: int | None) -> list[tuple[str, float]]:
+def _cache_path(series_id: str) -> Path:
+    safe_id = "".join(char for char in series_id if char.isalnum() or char in "-_")
+    return FRED_CACHE_DIR / f"{safe_id}.json"
+
+
+def _load_persistent(series_id: str) -> dict | None:
+    try:
+        with _cache_path(series_id).open("r", encoding="utf-8") as cache_file:
+            payload = json.load(cache_file)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            return None
+        return {
+            "data": [tuple(item) for item in payload["data"]],
+            "ts": float(payload.get("ts", 0)),
+            "requested_n": int(payload.get("requested_n", 0)),
+        }
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _write_persistent(series_id: str, entry: dict) -> None:
+    FRED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _cache_path(series_id)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    payload = {
+        "ts": entry["ts"],
+        "requested_n": entry.get("requested_n", 0),
+        "data": entry["data"],
+    }
+    try:
+        with tmp_path.open("w", encoding="utf-8") as cache_file:
+            json.dump(payload, cache_file, ensure_ascii=False, separators=(",", ":"))
+            cache_file.flush()
+            os.fsync(cache_file.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def _get_or_refresh(
+    series_id: str,
+    n_obs: int | None,
+    *,
+    force_refresh: bool = False,
+) -> list[tuple[str, float]]:
     entry = _get_entry(series_id)
+    n = n_obs or _default_n_obs(series_id)
 
-    if not _is_stale(entry, series_id):
+    if entry["data"] is None:
+        persisted = _load_persistent(series_id)
+        if persisted is not None:
+            entry.update(persisted)
+
+    if not force_refresh and not _is_stale(entry, series_id, n):
         return entry["data"]
 
     with entry["lock"]:
         # Re-check inside lock
-        if not _is_stale(entry, series_id):
+        if not force_refresh and not _is_stale(entry, series_id, n):
             return entry["data"]
 
-        n = n_obs or _default_n_obs(series_id)
+        stale_data = entry["data"]
         data = _fetch(series_id, n)
-        entry["data"] = data
-        entry["ts"]   = time.time()
+        if data:
+            entry["data"] = data
+            entry["ts"] = time.time()
+            entry["requested_n"] = n
+            _write_persistent(series_id, entry)
+        elif stale_data is not None:
+            print(f"[fred_cache] {series_id}: returning persisted stale data")
+            entry["data"] = stale_data
+            # Suppress duplicate retries from other routes in this process.
+            # The persisted timestamp remains unchanged, so the next collector
+            # process still attempts a real refresh.
+            entry["ts"] = time.time()
+            entry["requested_n"] = n
+        else:
+            entry["data"] = []
+            entry["ts"] = time.time()
+            entry["requested_n"] = n
 
     return entry["data"]
 
