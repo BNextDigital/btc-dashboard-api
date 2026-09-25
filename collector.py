@@ -288,6 +288,26 @@ def _synthesize_leading_all(merged_routes: dict[str, Any]) -> None:
         merged_routes["/leading/all"] = payload
 
 
+def _synthesize_powder_keg(
+    merged_routes: dict[str, Any],
+    *,
+    persist: bool = False,
+) -> None:
+    """Build /powder-keg from already-collected snapshot routes."""
+    try:
+        from powder_keg import build_powder_keg
+
+        merged_routes["/powder-keg"] = build_powder_keg(
+            merged_routes,
+            persist=persist,
+        )
+    except Exception as exc:
+        print(
+            "[collector] Powder Keg synthesis failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+
 def _base_snapshot_state() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     previous = load_snapshot()
     if not isinstance(previous, dict):
@@ -316,6 +336,7 @@ def _publish_checkpoint(
     previous, merged_routes, collections = _base_snapshot_state()
     merged_routes.update(route_updates)
     _synthesize_leading_all(merged_routes)
+    _synthesize_powder_keg(merged_routes, persist=False)
 
     now = time.time()
     collections[mode] = {
@@ -424,6 +445,7 @@ async def collect(mode: str) -> dict[str, Any]:
 
     merged_routes.update(route_updates)
     _synthesize_leading_all(merged_routes)
+    _synthesize_powder_keg(merged_routes, persist=True)
 
     oi_history = previous.get("oi_history")
     if mode in ("fast", "all"):
