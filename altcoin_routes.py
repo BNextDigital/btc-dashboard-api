@@ -5,7 +5,7 @@ from statistics import median
 from typing import Any
 from fastapi import APIRouter
 from altcoin_history import coverage, load_histories, store_market_history, store_metric_snapshot, store_universe, db_summary
-from altcoin_sources import fetch_binance_prices, fetch_binance_universe, fetch_cmc_altseason_latest, fetch_cmc_global_latest, fetch_cmc_index_latest
+from altcoin_sources import fetch_binance_prices, fetch_binance_universe, fetch_cmc_altseason_latest, fetch_cmc_altseason_history, fetch_cmc_global_latest, fetch_cmc_index_latest, fetch_cmc_index_history
 from shared.cg_cache import get_global as cg_get_global
 
 altcoin_router=APIRouter(prefix="/altcoins",tags=["altcoins"])
@@ -30,6 +30,19 @@ def _ma(values,n):
 
 def _pctn(n,d):
     return round(n/d*100,1) if d else None
+
+def _change_from_history(rows, days, value_key="value"):
+    values=[_f(r.get(value_key)) for r in rows if isinstance(r,dict)]
+    values=[v for v in values if v is not None]
+    if len(values)<2:
+        return None
+    current=values[-1]
+    index=max(0,len(values)-1-days)
+    prior=values[index]
+    return round(_pct(current,prior),2) if prior not in (None,0) else None
+
+def _pp_change(current, prior):
+    return round(current-prior,1) if current is not None and prior is not None else None
 
 def _market():
     missing=[]; latest={}
@@ -99,6 +112,22 @@ def _breadth_rotation(universe):
     above50,dist50=_ma_stats(eligible50,50)
     above200,dist200=_ma_stats(eligible200,200)
 
+    def _historical_ma_breadth(rows,n,days_ago):
+        usable={}
+        for s,v in rows.items():
+            if len(v) >= n + days_ago:
+                cutoff=len(v)-days_ago if days_ago else len(v)
+                usable[s]=v[:cutoff]
+        pct_value,_=_ma_stats(usable,n)
+        return pct_value
+
+    above20_7d=_historical_ma_breadth(eligible20,20,7)
+    above20_30d=_historical_ma_breadth(eligible20,20,30)
+    above50_7d=_historical_ma_breadth(eligible50,50,7)
+    above50_30d=_historical_ma_breadth(eligible50,50,30)
+    above200_7d=_historical_ma_breadth(eligible200,200,7)
+    above200_30d=_historical_ma_breadth(eligible200,200,30)
+
     ex200={s:v for s,v in eligible200.items() if asset[s]!="ETH"}
     ex_above=0
     for _,v in ex200.items():
@@ -133,8 +162,14 @@ def _breadth_rotation(universe):
         "eligible_50dma":len(eligible50),
         "eligible_200dma":len(eligible200),
         "above_20dma_pct":above20,
+        "above_20dma_change_7d_pp":_pp_change(above20,above20_7d),
+        "above_20dma_change_30d_pp":_pp_change(above20,above20_30d),
         "above_50dma_pct":above50,
+        "above_50dma_change_7d_pp":_pp_change(above50,above50_7d),
+        "above_50dma_change_30d_pp":_pp_change(above50,above50_30d),
         "above_200dma_pct":above200,
+        "above_200dma_change_7d_pp":_pp_change(above200,above200_7d),
+        "above_200dma_change_30d_pp":_pp_change(above200,above200_30d),
         "ex_eth_above_200dma_pct":_pctn(ex_above,len(ex200)),
         "live_above_200dma_pct":_pctn(live_above,live_n),
         "median_distance_20dma":dist20,
@@ -173,8 +208,12 @@ def _breadth_rotation(universe):
 
     outperform=lambda vals:_pctn(sum(x>0 for x in vals),len(vals))
     ethbtc=(eth[-1][1]/btc[-1][1]) if eth and btc and btc[-1][1] else None
+    ethbtc7=(eth[-8][1]/btc[-8][1]) if len(eth)>=8 and len(btc)>=8 and btc[-8][1] else None
+    ethbtc30=(eth[-31][1]/btc[-31][1]) if len(eth)>=31 and len(btc)>=31 and btc[-31][1] else None
     rotation={
         "eth_btc":ethbtc,
+        "eth_btc_change_7d_pct":round(_pct(ethbtc,ethbtc7),2) if ethbtc is not None and ethbtc7 else None,
+        "eth_btc_change_30d_pct":round(_pct(ethbtc,ethbtc30),2) if ethbtc is not None and ethbtc30 else None,
         "eligible_relative_7d":relative_eligible[7],
         "eligible_relative_30d":relative_eligible[30],
         "eligible_relative_90d":relative_eligible[90],
@@ -195,15 +234,63 @@ def _breadth_rotation(universe):
     return breadth,rotation,missing
 
 def _benchmarks():
-    missing=[]; result={}
+    missing=[]
+    result={}
     for name in ("cmc20","cmc100"):
-        try: result[name]=fetch_cmc_index_latest(name)
-        except Exception as exc: result[name]=None; missing.append(f"{name.upper()}: {exc}")
-    try: result["external_altseason_index"]=fetch_cmc_altseason_latest()
-    except Exception as exc: result["external_altseason_index"]=None; missing.append(f"CMC Altcoin Season Index: {exc}")
+        try:
+            latest=fetch_cmc_index_latest(name)
+            try:
+                hist=fetch_cmc_index_history(name,31)
+                latest["change_7d_pct"]=_change_from_history(hist,7)
+                latest["change_30d_pct"]=_change_from_history(hist,30)
+            except Exception as exc:
+                latest["change_7d_pct"]=None
+                latest["change_30d_pct"]=None
+                missing.append(f"{name.upper()} history: {exc}")
+            result[name]=latest
+        except Exception as exc:
+            result[name]=None
+            missing.append(f"{name.upper()}: {exc}")
+
+    try:
+        alt_latest=fetch_cmc_altseason_latest()
+        try:
+            hist=fetch_cmc_altseason_history("30d")
+            alt_latest["change_7d"]=_pp_change(
+                alt_latest.get("value"),
+                _f(hist[-8].get("value")) if len(hist)>=8 else None,
+            )
+            alt_latest["change_30d"]=_pp_change(
+                alt_latest.get("value"),
+                _f(hist[0].get("value")) if hist else None,
+            )
+            cap_values=[r for r in hist if _f(r.get("altcoin_market_cap")) is not None]
+            alt_latest["altcoin_market_cap_change_7d_pct"]=_change_from_history(
+                cap_values,7,"altcoin_market_cap"
+            )
+            alt_latest["altcoin_market_cap_change_30d_pct"]=_change_from_history(
+                cap_values,30,"altcoin_market_cap"
+            )
+        except Exception as exc:
+            alt_latest["change_7d"]=None
+            alt_latest["change_30d"]=None
+            alt_latest["altcoin_market_cap_change_7d_pct"]=None
+            alt_latest["altcoin_market_cap_change_30d_pct"]=None
+            missing.append(f"CMC Altcoin Season history: {exc}")
+        result["external_altseason_index"]=alt_latest
+    except Exception as exc:
+        result["external_altseason_index"]=None
+        missing.append(f"CMC Altcoin Season Index: {exc}")
+
     refs=load_histories(["BTCUSDT","ETHUSDT"],60)
-    result["btc"]={"change_30d":_ret(refs.get("BTCUSDT",[]),30)}
-    result["eth"]={"change_30d":_ret(refs.get("ETHUSDT",[]),30)}
+    result["btc"]={
+        "change_7d":_ret(refs.get("BTCUSDT",[]),7),
+        "change_30d":_ret(refs.get("BTCUSDT",[]),30),
+    }
+    result["eth"]={
+        "change_7d":_ret(refs.get("ETHUSDT",[]),7),
+        "change_30d":_ret(refs.get("ETHUSDT",[]),30),
+    }
     return result,missing
 
 def _state(market,breadth,rotation):
@@ -278,6 +365,10 @@ def altcoin_metrics():
     market,m=_market(); missing+=m
     breadth,rotation,m=_breadth_rotation(universe); missing+=m
     benchmarks,m=_benchmarks(); missing+=m
+    altseason=benchmarks.get("external_altseason_index") if isinstance(benchmarks,dict) else None
+    if isinstance(altseason,dict):
+        market["change_7d_pct"]=altseason.get("altcoin_market_cap_change_7d_pct")
+        market["change_30d_pct"]=altseason.get("altcoin_market_cap_change_30d_pct")
     state,supporting,contradicting=_state(market,breadth,rotation)
     payload={"state":state,"market":market,"breadth":breadth,"rotation":rotation,"benchmarks":benchmarks,
         "exchange_activity":{"status":"not_enabled","note":"V1.1 enrichment pending CryptoQuant endpoint confirmation."},
