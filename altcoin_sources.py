@@ -3,7 +3,7 @@ import os, time
 from typing import Any
 import requests
 
-BINANCE_BASE = os.getenv("BINANCE_SPOT_BASE", "https://api.binance.com")
+BINANCE_BASE = os.getenv("BINANCE_SPOT_BASE", "https://data-api.binance.vision")
 CMC_BASE = "https://pro-api.coinmarketcap.com"
 CMC_KEY = os.getenv("CMC_API_KEY", "").strip()
 COINPAPRIKA_BASE = os.getenv("COINPAPRIKA_BASE", "https://api.coinpaprika.com")
