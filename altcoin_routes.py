@@ -188,6 +188,8 @@ def _breadth_rotation(universe):
         "above_200dma_change_7d_pp":_pp_change(above200,above200_7d),
         "above_200dma_change_30d_pp":_pp_change(above200,above200_30d),
         "ex_eth_above_200dma_pct":_pctn(ex_above,len(ex200)),
+        "eligible_ex_eth_200dma":len(ex200),
+        "ex_eth_vs_all_200dma_pp":_pp_change(_pctn(ex_above,len(ex200)),above200),
         "live_above_200dma_pct":_pctn(live_above,live_n),
         "median_distance_20dma":dist20,
         "median_distance_50dma":dist50,
