@@ -99,3 +99,25 @@ def db_summary() -> dict:
     return {"path":str(DB_PATH),"daily_close_rows":rows,"symbols":symbols,"first_date":first,"last_date":last,"market_history_rows":market}
 
 init_db()
+
+
+def existing_history_index(symbols: Iterable[str]) -> dict[str, dict]:
+    """Return persisted months and latest date for resumable archive bootstrap."""
+    result: dict[str, dict] = {}
+    wanted = sorted(set(str(s).upper() for s in symbols))
+    if not wanted:
+        return result
+
+    with sqlite3.connect(DB_PATH) as conn:
+        for symbol in wanted:
+            rows = conn.execute(
+                "SELECT date FROM daily_close WHERE symbol=? ORDER BY date",
+                (symbol,),
+            ).fetchall()
+            dates = [str(r[0]) for r in rows]
+            result[symbol] = {
+                "months": sorted(set(d[:7] for d in dates if len(d) >= 7)),
+                "last_date": dates[-1] if dates else None,
+                "row_count": len(dates),
+            }
+    return result
