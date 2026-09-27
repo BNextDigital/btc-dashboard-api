@@ -33,6 +33,7 @@ from etf_flows_routes import etf_flows_router
 from liquidity_routes import liquidity_router as dollar_liquidity_router
 from liquidity_depth_routes import liquidity_router as depth_liquidity_router
 from derivatives_pressure_routes import derivatives_router
+from altcoin_routes import altcoin_router
 
 
 from formatters import (
@@ -105,6 +106,7 @@ app.include_router(etf_flows_router)
 app.include_router(dollar_liquidity_router)   # /liquidity/metrics, /liquidity/yield-curve, etc.
 app.include_router(depth_liquidity_router)    # /liquidity/depth, /liquidity/orderbook, etc.
 app.include_router(derivatives_router)
+app.include_router(altcoin_router)
 
 # ─── CME Basis — SQLite history ────────────────────────────────────────────
 
