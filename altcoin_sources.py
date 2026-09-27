@@ -99,6 +99,47 @@ def fetch_cmc_index_latest(name: str) -> dict:
     data = (_cmc_get(f"/v3/index/{name}-latest").get("data") or {})
     return {"value":_f(data.get("value")),"change_24h_pct":_f(data.get("value_24h_percentage_change")),"timestamp":data.get("last_update"),"source":"CoinMarketCap"}
 
+
+def fetch_cmc_index_history(name: str, count: int = 31) -> list[dict]:
+    name = name.lower()
+    if name not in {"cmc20", "cmc100"}:
+        raise ValueError("Unsupported index")
+    payload = _cmc_get(
+        f"/v3/index/{name}-historical",
+        params={"count": str(max(2, min(count, 90))), "interval": "daily"},
+        ttl=900,
+    )
+    rows = payload.get("data") or []
+    out = []
+    for row in rows if isinstance(rows, list) else []:
+        out.append({
+            "value": _f(row.get("value")),
+            "timestamp": row.get("update_time") or row.get("last_update"),
+        })
+    rows = [row for row in out if row["value"] is not None]
+    rows.sort(key=lambda row: str(row.get("timestamp") or ""))
+    return rows
+
+
+def fetch_cmc_altseason_history(timeframe: str = "30d") -> list[dict]:
+    if timeframe not in {"7d", "30d", "90d"}:
+        raise ValueError("Unsupported Altcoin Season timeframe")
+    payload = _cmc_get(
+        "/v1/altcoin-season-index/historical",
+        params={"timeframe": timeframe},
+        ttl=900,
+    )
+    data = payload.get("data") or {}
+    points = data.get("points") or []
+    out = []
+    for row in points if isinstance(points, list) else []:
+        out.append({
+            "value": _f(row.get("altcoin_index")),
+            "altcoin_market_cap": _f(row.get("altcoin_marketcap")),
+            "timestamp": row.get("timestamp"),
+        })
+    return out
+
 def fetch_cmc_global_history(time_start: str) -> list[dict]:
     if not CMC_KEY:
         raise RuntimeError("CMC_API_KEY required for global historical metrics")
