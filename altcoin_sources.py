@@ -116,7 +116,9 @@ def fetch_cmc_index_history(name: str, count: int = 31) -> list[dict]:
             "value": _f(row.get("value")),
             "timestamp": row.get("update_time") or row.get("last_update"),
         })
-    return [row for row in out if row["value"] is not None]
+    rows = [row for row in out if row["value"] is not None]
+    rows.sort(key=lambda row: str(row.get("timestamp") or ""))
+    return rows
 
 
 def fetch_cmc_altseason_history(timeframe: str = "30d") -> list[dict]:
