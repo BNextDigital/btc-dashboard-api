@@ -112,3 +112,41 @@ def fetch_cmc_global_history(time_start: str) -> list[dict]:
 def fetch_coinpaprika_tickers() -> list[dict]:
     data = _get(f"{COINPAPRIKA_BASE}/v1/tickers", params={"quotes":"USD"}, ttl=900, timeout=30)
     return data if isinstance(data, list) else []
+
+
+def fetch_binance_daily_klines(symbol: str, start_date: str, end_date: str) -> list[dict]:
+    """Fetch closed 1D spot candles from Binance's market-data-only REST API."""
+    from datetime import datetime, timezone, timedelta
+
+    symbol = symbol.upper()
+    start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+    end_day = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
+    end = end_day + timedelta(days=1) - timedelta(milliseconds=1)
+
+    rows = _get(
+        f"{BINANCE_BASE}/api/v3/klines",
+        params={
+            "symbol": symbol,
+            "interval": "1d",
+            "startTime": int(start.timestamp() * 1000),
+            "endTime": int(end.timestamp() * 1000),
+            "limit": 1000,
+        },
+        ttl=0,
+        timeout=30,
+    )
+
+    out = []
+    for row in rows if isinstance(rows, list) else []:
+        try:
+            open_ms = int(row[0])
+            day = datetime.fromtimestamp(open_ms / 1000, tz=timezone.utc).date().isoformat()
+            out.append({
+                "symbol": symbol,
+                "date": day,
+                "close": float(row[4]),
+                "source": "Binance market-data REST",
+            })
+        except (IndexError, TypeError, ValueError, OSError):
+            pass
+    return out
