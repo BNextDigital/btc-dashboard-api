@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from statistics import median
 from typing import Any
 from fastapi import APIRouter
-from altcoin_history import coverage, load_histories, store_market_history, store_metric_snapshot, store_universe, db_summary
+from altcoin_history import coverage, get_market_history, load_histories, store_market_history, store_metric_snapshot, store_universe, db_summary
 from altcoin_sources import fetch_binance_prices, fetch_binance_universe, fetch_cmc_altseason_latest, fetch_cmc_altseason_history, fetch_cmc_global_latest, fetch_cmc_index_latest, fetch_cmc_index_history
 from shared.cg_cache import get_global as cg_get_global
 
@@ -59,8 +59,25 @@ def _market():
     ts=latest.get("timestamp") or datetime.now(timezone.utc).isoformat()
     if altcap is not None:
         store_market_history({"date":ts[:10],"altcoin_market_cap":altcap,"total_market_cap":total,"btc_dominance":dom,"source":source,"timestamp":ts})
-    return {"altcoin_market_cap":altcap,"total_market_cap":total,"btc_dominance":dom,"timestamp":ts,
-        "provenance":{"source":source,"source_type":"AGGREGATOR","methodology":"CMC altcoin_market_cap; CoinGecko total-minus-BTC fallback","calculation_version":VERSION}},missing
+
+    hist=get_market_history(40)
+    dom7=_f(hist[-8].get("btc_dominance")) if len(hist)>=8 else None
+    dom30=_f(hist[-31].get("btc_dominance")) if len(hist)>=31 else None
+
+    return {
+        "altcoin_market_cap":altcap,
+        "total_market_cap":total,
+        "btc_dominance":dom,
+        "btc_dominance_change_7d_pp":_pp_change(dom,dom7),
+        "btc_dominance_change_30d_pp":_pp_change(dom,dom30),
+        "timestamp":ts,
+        "provenance":{
+            "source":source,
+            "source_type":"AGGREGATOR",
+            "methodology":"CMC altcoin_market_cap; CoinGecko total-minus-BTC fallback",
+            "calculation_version":VERSION,
+        },
+    },missing
 
 def _breadth_rotation(universe):
     missing=[]
