@@ -75,6 +75,8 @@ MARKET_ROUTES = (
     "/commodities/metrics",
     "/sector-flows/metrics",
     "/crypto-proxies",
+    # Altcoin View: market-wide benchmarks + optional live breadth from local MAs.
+    "/altcoins/metrics",
 )
 
 
