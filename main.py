@@ -27,6 +27,10 @@ from shared.yf_cache import get_series as _yf
 from shared.fred_cache import flush as _flush_fred, status as _fred_status
 from shared.cg_cache import get_asset_market, get_global
 from shared.snapshot_store import get_snapshot_route
+from shared.btc_alerts import (
+    classify_alert as _classify_alert_level, normalize_metrics,
+    summarize_alerts, build_causal, _derive_contradiction,
+)
 from sol_routes import sol_router
 from eth_routes import eth_router
 from etf_flows_routes import etf_flows_router
@@ -851,7 +855,7 @@ def _load_overrides() -> dict:
         return {}
     try:
         with open(OVERRIDE_FILE, "r") as f:
-            return json.load(f)
+            return normalize_metrics(json.load(f))
     except Exception:
         return {}
 
@@ -859,16 +863,6 @@ def _load_overrides() -> dict:
 def _save_overrides(data: dict) -> None:
     with open(OVERRIDE_FILE, "w") as f:
         json.dump(data, f, indent=2)
-
-
-def _classify_alert_level(alert: str) -> str:
-    if alert == "—" or not alert:
-        return "none"
-    if "Extreme" in alert:
-        return "extreme"
-    if alert in ("Accumulation", "Normal"):
-        return "neutral"
-    return "notable"
 
 
 def _metric_display_name(metric: str) -> str:
@@ -911,7 +905,8 @@ def _infer_direction(current: str) -> str:
 
 
 def _apply_overrides(metrics: dict) -> dict:
-    """Merge manual overrides into a metrics dict in-place."""
+    """Merge overrides without changing the collector cache."""
+    metrics = normalize_metrics(metrics)
     for key, override in _load_overrides().items():
         if key in metrics:
             metrics[key] = {
@@ -1075,7 +1070,7 @@ def get_metrics():
             return {**overrides[key], "_is_override": True}
         return metrics[key]
 
-    return {key: resolve(key) for key in metrics}
+    return normalize_metrics({key: resolve(key) for key in metrics})
 
 @app.get("/metrics/history")
 def get_metrics_history(date: str):
@@ -1215,109 +1210,14 @@ def get_summary():
     cg = get_shared_coingecko()
     metrics = _apply_overrides(_build_metrics_cached(cg))
 
-    active_alerts = []
-    for m in metrics.values():
-        if m.get("alert") != "—" and m.get("alert_level") != "none":
-            active_alerts.append({
-                "metric":  m["name"],
-                "alert":   m["alert"],
-                "level":   m["alert_level"],
-                "current": m["current"],
-            })
-
-    level_order = {"extreme": 0, "notable": 1, "neutral": 2}
-    active_alerts.sort(key=lambda a: level_order.get(a["level"], 3))
-
-    extreme_count = sum(1 for a in active_alerts if a["level"] == "extreme")
-    notable_count = sum(1 for a in active_alerts if a["level"] == "notable")
-
-    if extreme_count >= 2:
-        structure = "Multiple extreme signals active"
-    elif extreme_count == 1 and notable_count >= 2:
-        structure = "One extreme signal with elevated backdrop"
-    elif extreme_count == 1:
-        structure = f"Extreme {active_alerts[0]['metric'].lower()} signal"
-    elif notable_count >= 3:
-        structure = "Broad notable signals across metrics"
-    elif notable_count >= 1:
-        structure = "Notable signals — monitor closely"
-    else:
-        structure = "No significant alerts active"
-
-    return {
-        "structure":     structure,
-        "extreme_count": extreme_count,
-        "notable_count": notable_count,
-        "active_alerts": active_alerts,
-        "total_alerts":  len(active_alerts),
-    }
+    return summarize_alerts(metrics)
 
 
 @app.get("/causal")
 def get_causal():
     cg = get_shared_coingecko()
     metrics = _apply_overrides(_build_metrics_cached(cg))
-
-    def weight_from_level(level: str) -> str:
-        return {"extreme": "extreme", "notable": "strong", "neutral": "moderate"}.get(level, "moderate")
-
-    def derive_state(m: dict) -> str:
-        alert   = m.get("alert",   "—")
-        pattern = m.get("pattern", "—")
-        current = m.get("current", "—")
-        if alert != "—":
-            base = alert.lower()
-            return f"{base} · {pattern.lower()}" if pattern != "—" else base
-        return pattern.lower() if pattern != "—" else f"at {current}"
-
-    chain = [
-        {
-            "label":  "ETF & institutional flow",
-            "state":  derive_state(metrics["etf_flow"]),
-            "weight": weight_from_level(metrics["etf_flow"]["alert_level"]),
-        },
-        {
-            "label":  "Price action",
-            "state":  derive_state(metrics["price_move"]),
-            "weight": weight_from_level(metrics["price_move"]["alert_level"]),
-        },
-        {
-            "label":  "Volume",
-            "state":  derive_state(metrics["volume"]),
-            "weight": weight_from_level(metrics["volume"]["alert_level"]),
-        },
-        {
-            "label":  "Funding",
-            "state":  derive_state(metrics["funding"]),
-            "weight": weight_from_level(metrics["funding"]["alert_level"]),
-        },
-        {
-            "label":  "Capital (realized cap)",
-            "state":  derive_state(metrics["realized_cap"]),
-            "weight": weight_from_level(metrics["realized_cap"]["alert_level"]),
-        },
-        {
-            "label":  "CME basis (cash & carry)",
-            "state":  derive_state(metrics["cme_basis"]),
-            "weight": weight_from_level(metrics["cme_basis"]["alert_level"]),
-        },
-        {
-            "label":  "Stablecoin liquidity (USDT + USDC)",
-            "state":  derive_state(metrics["stablecoin_supply"]),
-            "weight": weight_from_level(metrics["stablecoin_supply"]["alert_level"]),
-        },
-        {
-            "label":  "BTC dominance",
-            "state":  derive_state(metrics["btc_dominance"]),
-            "weight": weight_from_level(metrics["btc_dominance"]["alert_level"]),
-        },
-    ]
-
-    return {
-        "chain":         chain,
-        "contradiction": _derive_contradiction(metrics),
-        "generated_at":  datetime.now(timezone.utc).isoformat(),
-    }
+    return build_causal(metrics)
 
 
 @app.get("/health")
@@ -1381,44 +1281,7 @@ def get_crypto_proxies():
 
 # ─── Contradiction engine ──────────────────────────────────────────────────
 
-def _derive_contradiction(metrics: dict) -> str:
-    funding_level  = metrics["funding"]["alert_level"]
-    cap_level      = metrics["realized_cap"]["alert_level"]
-    etf_level      = metrics["etf_flow"]["alert_level"]
-    oi_level       = metrics["open_interest"]["alert_level"]
-    volume_pattern = metrics["volume"].get("pattern", "—")
-    funding_alert  = metrics["funding"].get("alert", "—").lower()
-    basis_level    = metrics["cme_basis"]["alert_level"]
-    basis_alert    = metrics["cme_basis"].get("alert", "—").lower()
 
-    if "shorting" in funding_alert and cap_level in ("notable", "extreme"):
-        return "Extreme short positioning against strong capital inflow — leverage and spot diverging."
-
-    if "leverage" in funding_alert and cap_level == "none":
-        return "Elevated leverage with no corresponding capital inflow — positioning appears speculative."
-
-    if oi_level in ("notable", "extreme") and volume_pattern == "Absorption":
-        return "Large open position base with absorption volume — significant supply being absorbed."
-
-    if etf_level in ("notable", "extreme") and "leverage" in funding_alert:
-        return "Institutional inflow (ETF) alongside elevated retail leverage — capital quality diverging."
-
-    if basis_level == "extreme" and "leverage" in funding_alert:
-        return "Extreme CME basis alongside elevated funding — institutional carry demand meeting retail leverage."
-
-    if "backwardation" in basis_alert and etf_level in ("notable", "extreme"):
-        return "Futures backwardation despite ETF inflow — unusual structure, spot demand not translating to futures premium."
-
-    if oi_level in ("notable", "extreme") and volume_pattern == "Distribution":
-        return "Large open positions with distribution volume — crowded trade showing supply pressure."
-
-    active_signals = [m for m in metrics.values() if m.get("alert_level") in ("notable", "extreme")]
-    if len(active_signals) >= 3:
-        return "Multiple signals elevated simultaneously — broad market activation across metrics."
-    if len(active_signals) == 0:
-        return "No significant contradictions — market structure is neutral across monitored metrics."
-
-    return "Monitor for developing contradictions as signals evolve."
 
 
 # ─── Judgment Panel ────────────────────────────────────────────────────────

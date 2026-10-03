@@ -31,6 +31,10 @@ from pydantic import BaseModel
 from fastapi.middleware.gzip import GZipMiddleware
 
 from growth_release_watcher import GrowthReleaseWatcher
+from shared.btc_alerts import (
+    classify_alert as _classify_alert_level, normalize_metrics,
+    summarize_alerts, build_causal,
+)
 
 from shared.snapshot_store import (
     get_snapshot_route,
@@ -367,7 +371,7 @@ def _load_overrides() -> dict:
     try:
         with OVERRIDE_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        return normalize_metrics(data) if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -426,16 +430,6 @@ def _infer_direction(current: str) -> str:
     if stripped.startswith("-"):
         return "down"
     return "flat"
-
-
-def _classify_alert_level(alert: str) -> str:
-    if alert == "—" or not alert:
-        return "none"
-    if "Extreme" in alert:
-        return "extreme"
-    if alert in ("Accumulation", "Normal"):
-        return "neutral"
-    return "notable"
 
 
 def _fmt_billions(v: float) -> str:
@@ -1227,10 +1221,7 @@ def _apply_btc_metric_overrides(value):
         return value
 
     overrides = _load_overrides()
-    if not overrides:
-        return value
-
-    result = dict(value)
+    result = normalize_metrics(value)
     for key, override in overrides.items():
         if key in result and isinstance(result[key], dict):
             result[key] = {
@@ -1238,7 +1229,7 @@ def _apply_btc_metric_overrides(value):
                 **override,
                 "_is_override": True,
             }
-    return result
+    return normalize_metrics(result)
 
 
 @app.get("/dashboard/{asset}")
@@ -1273,6 +1264,15 @@ def get_dashboard_bundle(asset: str, request: Request, response: Response):
         if asset_key == "btc" and key == "metrics":
             value = _apply_btc_metric_overrides(value)
         payload[key] = value
+
+    if asset_key == "btc" and isinstance(payload.get("metrics"), dict):
+        metrics = payload["metrics"]
+        if "summary" in payload:
+            payload["summary"] = summarize_alerts(metrics)
+        if isinstance(payload.get("causal"), dict):
+            payload["causal"] = build_causal(
+                metrics, generated_at=payload["causal"].get("generated_at")
+            )
 
     all_collections = snapshot.get("collections", {})
     if not isinstance(all_collections, dict):
@@ -1342,5 +1342,13 @@ def snapshot_compatibility_route(full_path: str):
     # than waiting for the next collector cycle.
     if path == "/metrics" and isinstance(value, dict):
         value = _apply_btc_metric_overrides(value)
+
+    if path in ("/summary", "/causal"):
+        metrics = get_snapshot_route("/metrics")
+        if isinstance(metrics, dict):
+            metrics = _apply_btc_metric_overrides(metrics)
+            if path == "/summary":
+                return summarize_alerts(metrics)
+            return build_causal(metrics, generated_at=value.get("generated_at"))
 
     return value

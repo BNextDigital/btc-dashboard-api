@@ -15,6 +15,7 @@ Thresholds come from the build guide (Step 8 — industry conventions):
 """
 
 from typing import Optional
+from shared.btc_alerts import classify_alert as _classify_alert
 
 
 # ─── Shared helpers ────────────────────────────────────────────────────────
@@ -48,17 +49,6 @@ def _format_pct_change(ratio: float) -> str:
     return f"{ratio * 100:+.0f}%"
 
 
-def _classify_alert(alert: str) -> str:
-    """Map alert text to severity level for frontend styling."""
-    if alert == "—":
-        return "none"
-    if "Extreme" in alert and "Accumulation" not in alert:
-        return "extreme"
-    if alert in ("Accumulation",):
-        return "neutral"
-    return "notable"
-
-
 # ─── ETF FLOW ──────────────────────────────────────────────────────────────
 
 def format_etf_flow(
@@ -78,8 +68,7 @@ def format_etf_flow(
         elif ratio > 2.0:         alert = "Strong acceleration"
         elif ratio > 1.5:         alert = "Flow acceleration"
         else:                     alert = "—"
-    if not alert_level:
-        alert_level = _classify_alert(alert)
+    alert_level = _classify_alert(alert, alert_level)
 
     flow_str = _format_money(current_daily) if current_daily else "—"
 
