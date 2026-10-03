@@ -2693,61 +2693,88 @@ def sol_cme_basis():
     }
 
 
+OUSD_VERIFIED_AT = "2026-10-03"
+OUSD_REVIEW_AFTER_DAYS = 30
+
+
 @sol_router.get("/ousd-status")
 def ousd_status():
-    """
-    Static thesis context.
-
-    This route intentionally does not pretend to be live chain data. Replace
-    with on-chain OUSD supply/integration telemetry once those sources exist.
-    """
+    """Manually verified issuer context; never presented as live adoption data."""
+    verification_age = max(0, (date.today() - date.fromisoformat(OUSD_VERIFIED_AT)).days)
     return {
-        "status": "pre_launch",
-        "expected_live": "H2 2026",
+        "name": "Open USD",
+        "symbol": "OUSD",
+        "operator": "Open Standard",
+        "issuer": "Bridge Building Inc.",
+        "status": "live",
+        "launched_at": "2026-09-30",
+        "expected_live": None,
         "announced": "2026-06-30",
-        "partner_count": 140,
-        "native_chains": [
-            "Solana",
-            "Stellar",
-            "Base",
-            "Polygon",
-        ],
-        "confirmed_partners": [
-            "Visa",
-            "Mastercard",
-            "Stripe",
-            "American Express",
-            "Google",
-            "Shopify",
-            "BlackRock",
-            "BNY",
-            "Standard Chartered",
-            "Coinbase",
-            "Aave",
-            "Solana Foundation",
+        # Preserve the legacy numeric field as a qualified lower bound, not an exact count.
+        "partner_count": 200,
+        "partner_count_qualifier": "more_than",
+        "partner_count_display": "More than 200",
+        "partner_count_exact": None,
+        "partner_count_as_of": "2026-09-30",
+        "native_chains": ["Base", "Ethereum", "Solana", "Tempo"],
+        "solana_mint": "ousd2mJsPEckLHcSCDxyKD7NDGARZcfLbDZkKiatYHB",
+        "founding_partners": ["Coinbase", "Mastercard", "Shopify", "Stripe", "Visa"],
+        "confirmed_partners": ["Coinbase", "Mastercard", "Shopify", "Stripe", "Visa"],
+        "confirmed_partners_scope": "Founding partners; not an exhaustive integration roster",
+        "stripe_default": {"stablecoin": "OUSD", "chain": "Tempo"},
+        "reserve_holders": ["BlackRock", "Lead Bank", "BNY"],
+        "reserve_attestation": {
+            "cadence": "monthly",
+            "status": "issuer_announced",
+            "url": "https://reserves.bridge.xyz/ousd",
+            "latest_report_verified": False,
+        },
+        "partner_signals": [
+            {"key": "Stripe", "role": "Default configuration: OUSD on Tempo", "confirmed": True},
+            {"key": "Visa", "role": "Founding partner", "confirmed": True},
+            {"key": "Mastercard", "role": "Founding partner", "confirmed": True},
+            {"key": "Shopify", "role": "Founding partner", "confirmed": True},
+            {"key": "Coinbase", "role": "Founding partner", "confirmed": True},
+            {"key": "Bridge", "role": "Bridge Building Inc. issues OUSD", "confirmed": True},
+            {"key": "Reserves", "role": "Held at BlackRock, Lead Bank and BNY", "confirmed": True},
+            {"key": "Attestation", "role": "Monthly cadence announced; latest report unchecked", "confirmed": True},
         ],
         "open_questions": [
-            "Reserve custodian — unpublished",
-            "Attestation cadence — not confirmed",
-            "Go-live date — H2 2026 expected, not fixed",
-            "Management fee — not disclosed",
+            "Solana OUSD supply and transfer activity are not collected by this endpoint",
+            "The reported network partner count does not measure active integrations",
+            "The latest reserve attestation has not been retrieved or assessed here",
+            "Solana's share of OUSD payment activity remains unmeasured here",
         ],
         "thesis_signals": {
             "confirms": [
-                "Solana chosen as native chain — day-one deployment",
-                "Stripe making OUSD default for business transactions",
-                "140+ partner signatories including Tier 1 banks and payment networks",
-                "Stablecoin supply on Solana accelerating pre-launch",
+                "OUSD launched September 30, 2026 with native Solana support",
+                "Base, Ethereum and Tempo are also supported native chains",
+                "Open Standard reported more than 200 network partners at launch",
+                "Reserve institutions and a monthly attestation cadence have been disclosed",
             ],
             "invalidates": [
-                "Launch delayed beyond H2 2026",
-                "Reserve composition or attestation below USDC standards",
-                "Partner integration rate at go-live << 140 signatories",
-                "Solana de-prioritized post-launch in favor of other chains",
+                "Watch whether OUSD supply and payment usage on Solana grow after launch",
+                "Compare active integrations with the announced network partner roster",
+                "Review published attestations for reserve coverage and timeliness",
+                "Track chain allocation: Stripe's default OUSD configuration uses Tempo",
             ],
         },
-        "_data_mode": "static_thesis_context",
-        "_last_updated": "2026-07-03",
+        "sources": [
+            {"id": "launch", "title": "Open Standard launch announcement", "url": "https://joinopenstandard.com/blog/ousd-is-live/", "published_at": "2026-09-30"},
+            {"id": "stripe", "title": "Stripe OUSD product announcement", "url": "https://stripe.com/blog/ousd-now-live-on-stripe", "published_at": "2026-09-30"},
+            {"id": "issuer", "title": "Bridge issuer announcement", "url": "https://withbridge.com/blog/ousd-is-live-issued-by-bridge", "published_at": "2026-09-30"},
+            {"id": "announcement", "title": "Open Standard initial announcement", "url": "https://joinopenstandard.com/blog/introducing-open-usd", "published_at": "2026-06-30"},
+        ],
+        "data_quality": {
+            "status": "review_due" if verification_age > OUSD_REVIEW_AFTER_DAYS else "verified_static",
+            "verified_at": OUSD_VERIFIED_AT,
+            "verification_age_days": verification_age,
+            "review_after_days": OUSD_REVIEW_AFTER_DAYS,
+            "live_telemetry_available": False,
+            "note": "Official launch facts checked manually; adoption, supply and reserve coverage are not measured here.",
+        },
+        "_data_mode": "verified_static_context",
+        "_last_updated": OUSD_VERIFIED_AT,
     }
 
 
