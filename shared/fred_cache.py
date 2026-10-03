@@ -32,8 +32,8 @@ TTL POLICY
   quota and adds latency for no gain.
 
   daily     →  1 hour   (rates, spreads, breakevens, WTI, SOFR)
-  weekly    →  4 hours  (claims, M2, reserves, TGA, RRP, gasoline)
-  monthly   → 12 hours  (CPI, PCE, payrolls, GDP, sentiment, ISM)
+  weekly    →  4 hours  (claims, reserves, TGA, gasoline)
+  monthly   → 12 hours  (CPI, PCE, payrolls, M2, sentiment, ISM)
   quarterly → 24 hours  (GDP revision)
 
 ─────────────────────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ ALL_SERIES: dict[str, Frequency] = {
     "WRESBAL":          "weekly",   # Reserve balances at Fed
     "WTREGEN":          "weekly",   # Treasury General Account
     "RRPONTSYD":        "daily",    # Overnight Reverse Repo (daily)
-    "M2SL":             "weekly",   # M2 money supply
+    "M2SL":             "monthly",  # M2 money supply (seasonally adjusted)
 
     # ── Employment (weekly) ───────────────────────────────────────────────
     "ICSA":             "weekly",   # Initial jobless claims

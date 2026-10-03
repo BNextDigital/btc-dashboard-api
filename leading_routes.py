@@ -5,7 +5,7 @@ Indicators & data sources:
   1. BTC Options IV Term Structure & Risk Reversal  — Deribit public REST (no key)
   2. Coinbase Premium Index                          — CryptoQuant (CRYPTOQUANT_API_KEY)
   3. Cumulative Funding Rate (30d)                   — CoinGecko derivatives (no extra key)
-  4. Global M2 Money Supply                          — FRED (FRED_API_KEY)
+  4. Global M2 Money Supply                          — FRED / ECB / PBoC / BOJ
   5. CFTC Commitment of Traders — BTC Futures        — CFTC public Socrata API (no key)
   6. Tether Mint/Burn Events                         — CoinGecko (extends existing stablecoin data)
   7. Breakeven Inflation Rates (TIPS Spread)         — FRED (FRED_API_KEY)
@@ -47,6 +47,7 @@ from fastapi import APIRouter
 from data_sources import get_shared_coingecko, COINGECKO_BASE, _coingecko_headers, _cached_get
 from shared.fred_cache import get_series as _shared_fred_series
 from shared.yf_core_cache import get_series as _yf
+from shared.global_m2 import fetch_global_m2
 leading_router = APIRouter(prefix="/leading")
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ def _cache_is_stale(cache: dict) -> bool:
 _options_cache    = {"data": None, "ts": 0.0}   # 15 min TTL (market hours)
 _premium_cache    = {"data": None, "ts": 0.0}   # 15 min TTL
 _funding_cache    = {"data": None, "ts": 0.0}   # 8 hr TTL
-_m2_cache         = {"data": None, "ts": 0.0}   # daily (FRED data is monthly)
+_m2_cache         = {"data": None, "ts": 0.0}   # daily (source data is monthly)
 _cot_cache        = {"data": None, "ts": 0.0}   # daily (weekly releases)
 _tether_cache     = {"data": None, "ts": 0.0}   # daily
 _breakeven_cache  = {"data": None, "ts": 0.0}   # daily
@@ -125,7 +126,7 @@ def _leading_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS global_m2_history (
+        CREATE TABLE IF NOT EXISTS global_m2_history_v2 (
             date TEXT PRIMARY KEY,
             us_m2 REAL, eurozone_m2 REAL, china_m2 REAL, japan_m2 REAL,
             global_m2_usd REAL, mom_growth REAL, yoy_growth REAL, stored_at TEXT
@@ -715,142 +716,73 @@ def _build_funding_cumulative() -> dict:
 
 # ════════════════════════════════════════════════════════════════════════════
 # INDICATOR 4 — Global M2 Money Supply
-# Source: FRED (FRED_API_KEY)
-# Lead time: 8-12 weeks
+# Source: FRED / ECB / PBoC / BOJ, observation-month ECB FX
+# Lead time: 8-12 weeks (heuristic)
 # ════════════════════════════════════════════════════════════════════════════
-
-# FX conversion: approximate USD equivalents for non-USD series
-# FRED series already in USD for eurozone; China/Japan need FX conversion
-# We use a rough static FX table that can be overridden manually if needed
-APPROX_FX_USD = {
-    "cny_per_usd": 7.25,    # update manually if major move
-    "jpy_per_usd": 155.0,
-    "eur_per_usd": 1.08,
-}
-
-FRED_M2_SERIES = {
-    "us":       "M2SL",               # Billions of USD, monthly, NSA
-    "eurozone": "MABMM301EZM189S",    # Millions of EUR, monthly
-    "china":    "MABMM301CNM189S",    # Millions of CNY, monthly
-    "japan":    "MABMM301JPM189S",    # Millions of JPY, monthly
-}
-
-
-def fetch_global_m2() -> dict | None:
-    if not FRED_API_KEY:
-        return None
-
-    series = {}
-    for region, sid in FRED_M2_SERIES.items():
-        pairs = _fetch_fred(sid, n_days=550)  # ~18 months for YoY
-        if pairs:
-            series[region] = pairs
-        else:
-            print(f"[leading] M2 FRED fetch empty for {region} ({sid})")
-            series[region] = []
-
-    # Need at least US data
-    if not series.get("us"):
-        return None
-
-    def _latest_val(pairs):
-        return pairs[-1][1] if pairs else None
-
-    def _val_n_months_ago(pairs, n):
-        """Roughly n months back (n*30 days)."""
-        if not pairs:
-            return None
-        target_date = date.today() - timedelta(days=n * 30)
-        # Find closest entry
-        best = min(pairs, key=lambda p: abs(
-            (date.fromisoformat(p[0]) - target_date).days
-        ))
-        return best[1]
-
-    # Convert to USD billions
-    us_bil  = (_latest_val(series["us"]) or 0)  # already in billions USD
-    ez_bil  = (_latest_val(series["eurozone"]) or 0) / 1e3 * APPROX_FX_USD["eur_per_usd"]  # millions EUR → billions USD
-    cn_bil  = (_latest_val(series["china"])    or 0) / 1e3 / APPROX_FX_USD["cny_per_usd"]  # millions CNY → billions USD
-    jp_bil  = (_latest_val(series["japan"])    or 0) / 1e3 / APPROX_FX_USD["jpy_per_usd"]  # millions JPY → billions USD
-
-    global_m2 = us_bil + ez_bil + cn_bil + jp_bil
-
-    # MoM and YoY growth (using US as primary driver for now)
-    us_1m_ago  = _val_n_months_ago(series["us"], 1)
-    us_12m_ago = _val_n_months_ago(series["us"], 12)
-    mom = ((us_bil - us_1m_ago)  / us_1m_ago  * 100) if us_1m_ago  else None
-    yoy = ((us_bil - us_12m_ago) / us_12m_ago * 100) if us_12m_ago else None
-
-    # Last date available
-    last_date = series["us"][-1][0] if series["us"] else "Unknown"
-
-    return {
-        "us_m2_bil":       round(us_bil,  1),
-        "eurozone_m2_bil": round(ez_bil,  1),
-        "china_m2_bil":    round(cn_bil,  1),
-        "japan_m2_bil":    round(jp_bil,  1),
-        "global_m2_bil":   round(global_m2, 1),
-        "mom_growth_pct":  round(mom, 3) if mom else None,
-        "yoy_growth_pct":  round(yoy, 3) if yoy else None,
-        "last_date":       last_date,
-        "fx_assumptions":  APPROX_FX_USD,
-    }
-
 
 def format_global_m2(raw: dict | None) -> dict:
     if not raw:
-        return {"error": "Global M2 unavailable — check FRED_API_KEY", "lead_time": "8-12 weeks"}
+        return {"error": "Global M2 sources unavailable", "lead_time": "8-12 weeks"}
 
-    yoy = raw.get("yoy_growth_pct")
-    mom = raw.get("mom_growth_pct")
-
-    if yoy is not None and yoy > 8:
-        alert = "Global M2 expanding — historical BTC tailwind with 8-12 week lag"
-        level = "extreme"
+    yoy, mom = raw.get("yoy_growth_pct"), raw.get("mom_growth_pct")
+    quality = raw["data_quality"]["status"]
+    total = raw.get("global_m2_bil")
+    if total is None:
+        alert, level = "Global M2 unavailable — check source coverage and observation dates", "none"
+        pattern = "Insufficient current data"
+    elif quality != "good":
+        alert, level = "Global M2 data degraded — inspect source warnings", "none"
+        pattern = "Growth unavailable" if yoy is None else "Source coverage degraded"
+    elif yoy is not None and yoy > 8:
+        alert, level = "Global M2 expanding — potential liquidity tailwind", "extreme"
+        pattern = "M2 expansion"
+    elif yoy is not None and yoy < 0:
+        alert, level = "Global M2 contracting — potential liquidity headwind", "notable"
+        pattern = "M2 contraction"
     elif yoy is not None and yoy < 2:
-        alert = "Global M2 contracting — historical BTC headwind with 8-12 week lag"
-        level = "notable"
+        alert, level = "Global M2 growth subdued", "notable"
+        pattern = "M2 growth subdued"
     elif mom is not None and mom > 0:
-        alert = "M2 momentum turning — watch for BTC follow 2-3 months out"
-        level = "neutral"
+        alert, level = "M2 rising month over month", "neutral"
+        pattern = "M2 expansion" if yoy is not None and yoy > 5 else "M2 stable — neutral regime backdrop"
     else:
-        alert = "—"
-        level = "none"
+        alert, level = "—", "none"
+        pattern = "Growth unavailable" if yoy is None else "M2 stable — neutral regime backdrop"
+
+    def money(value):
+        if value is None:
+            return "–"
+        return f"${value / 1000:,.2f}T" if value >= 1000 else f"${value:,.1f}B"
 
     result = {
-        "name":        "Global M2 Money Supply",
-        "category":    "Macro · Liquidity",
-        "lead_time":   "8-12 weeks",
-        "global_m2":   f"${raw['global_m2_bil']:,.0f}B",
-        "us_m2":       f"${raw['us_m2_bil']:,.0f}B",
-        "eurozone_m2": f"${raw['eurozone_m2_bil']:,.0f}B",
-        "china_m2":    f"${raw['china_m2_bil']:,.0f}B",
-        "japan_m2":    f"${raw['japan_m2_bil']:,.0f}B",
-        "mom_growth":  f"{mom:+.2f}%" if mom is not None else "–",
-        "yoy_growth":  f"{yoy:+.2f}%" if yoy is not None else "–",
-        "data_lag_note": "FRED data lags ~6 weeks. This is a regime indicator, not a short-term signal.",
-        "last_date":   raw.get("last_date", "Unknown"),
-        "alert":       alert,
+        **raw,
+        "name": "Global M2 Money Supply",
+        "category": "Macro · Liquidity",
+        "lead_time": "8-12 weeks",
+        "global_m2": money(total),
+        **{f"{r}_m2": money(raw.get(f"{r}_m2_bil")) for r in ("us", "eurozone", "china", "japan")},
+        "mom_growth": f"{mom:+.2f}%" if mom is not None else "–",
+        "yoy_growth": f"{yoy:+.2f}%" if yoy is not None else "–",
+        "data_lag_note": "Monthly releases arrive at different times. All four regions and FX are aligned to the latest common completed month. The suggested 8-12 week lead is a heuristic, not a forecast.",
+        "alert": alert,
         "alert_level": level,
-        "pattern": (
-            "M2 expansion — risk-on regime historically follows" if (yoy or 0) > 5 else
-            "M2 deceleration — tightening conditions" if (yoy or 0) < 3 else
-            "M2 stable — neutral regime backdrop"
-        ),
-        "fx_assumptions": raw.get("fx_assumptions"),
+        "pattern": pattern,
     }
-
-    _upsert("global_m2_history", {
-        "date":          _today(),
-        "us_m2":         raw["us_m2_bil"],
-        "eurozone_m2":   raw["eurozone_m2_bil"],
-        "china_m2":      raw["china_m2_bil"],
-        "japan_m2":      raw["japan_m2_bil"],
-        "global_m2_usd": raw["global_m2_bil"],
-        "mom_growth":    raw.get("mom_growth_pct"),
-        "yoy_growth":    raw.get("yoy_growth_pct"),
-        "stored_at":     datetime.utcnow().isoformat(),
-    })
+    if total is None:
+        result["error"] = "No complete, current four-region M2 composite"
+    else:
+        # Separate v2 history prevents invalid legacy units entering the chart.
+        _upsert("global_m2_history_v2", {
+            "date": _today(),
+            "us_m2": raw["us_m2_bil"],
+            "eurozone_m2": raw["eurozone_m2_bil"],
+            "china_m2": raw["china_m2_bil"],
+            "japan_m2": raw["japan_m2_bil"],
+            "global_m2_usd": total,
+            "mom_growth": mom,
+            "yoy_growth": yoy,
+            "stored_at": datetime.now(timezone.utc).isoformat(),
+        })
     return result
 
 
@@ -1461,7 +1393,7 @@ def get_leading_history(indicator: str, days: int = 90):
         "options":         ("options_history",            ["date", "iv_7d", "iv_30d", "term_spread", "risk_reversal_25d"]),
         "coinbase_premium":("coinbase_premium_history",   ["date", "premium_pct", "avg_24h"]),
         "funding":         ("funding_cumulative_history", ["date", "daily_rate", "cumulative_7d", "cumulative_30d"]),
-        "global_m2":       ("global_m2_history",          ["date", "global_m2_usd", "mom_growth", "yoy_growth"]),
+        "global_m2":       ("global_m2_history_v2",          ["date", "global_m2_usd", "mom_growth", "yoy_growth"]),
         "cot":             ("cot_history",                 ["date", "lev_long", "lev_short", "lev_net", "lev_net_pct"]),
         "tether":          ("tether_mint_history",         ["date", "usdt_supply", "daily_change", "large_mint_flag"]),
         "breakevens":      ("breakeven_history",           ["date", "be_5y", "be_10y", "be_5y5y"]),
