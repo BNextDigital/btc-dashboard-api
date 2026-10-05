@@ -171,7 +171,7 @@ ALL_TICKERS: dict[str, str] = {
     "dxy":      "DX-Y.NYB",
     "eurusd":   "EURUSD=X",
     "usdjpy":   "JPY=X",
-    "usdcnh":   "CNY=X",
+    "usdcnh":   "CNH=X",  # Offshore RMB; CNY=X is the distinct onshore pair.
 
     # ── FX — Emerging Markets ─────────────────────────────────────────────
     "usdbrl":   "BRL=X",
