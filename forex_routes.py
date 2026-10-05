@@ -9,10 +9,11 @@ CHANGES FROM ORIGINAL:
   - _build_forex_metrics() reads from shared caches instead of fetching
   - _build_em_basket() receives individual series instead of a yf_data dict
 
-Everything else — card builders, carry logic, wind assessment, routes — unchanged.
+CNH uses the offshore Yahoo series and keeps alert severity separate from FX wind direction.
 """
 
 import os
+import math
 import time
 from datetime import datetime
 from fastapi import APIRouter
@@ -251,21 +252,49 @@ def _build_usdjpy_card(series) -> dict:
     return card
 
 
+# Fixed level bands are contextual heuristics, not evidence of capital flows
+# or PBOC intervention. Severity and FX direction are independent dimensions.
+_CNH_LEVEL_BANDS = [
+    (7.40, "extreme", "headwind", "CNH very weak — high USD pressure in the offshore pair"),
+    (7.25, "notable", "headwind", "CNH weak — elevated USD pressure in the offshore pair"),
+    (7.10, "none", "neutral", "USD/CNH elevated — monitor the offshore pair"),
+    (6.90, "none", "neutral", "USD/CNH moderate — within the configured level range"),
+    (0, "notable", "tailwind", "CNH strong — lower USD pressure in the offshore pair"),
+]
+
+
 def _build_usdcnh_card(series) -> dict:
-    return _build_pair_card(
+    source = "yFinance: CNH=X (offshore USD/CNH)"
+    if series is not None and len(series):
+        # Do not silently substitute an earlier price for an invalid current one.
+        try:
+            valid = all(math.isfinite(float(v)) and float(v) > 0 for v in series.tolist())
+        except (TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
+            return {"name": "USD/CNH", "city_label": CITY_LABELS["usdcnh"],
+                    "error": "Invalid USD/CNH observations", "source": source,
+                    "alert_level": "none", "wind_effect": "neutral"}
+
+    card = _build_pair_card(
         key="usdcnh", name="USD/CNH", series=series,
         city_label=CITY_LABELS["usdcnh"],
-        level_thresholds=[
-            (7.40, "extreme", "CNH very weak — significant Asia stress / USD dominance"),
-            (7.25, "notable", "CNH weak — elevated USD pressure on China"),
-            (7.10, "none",    "USD/CNH elevated — watch for PBOC response"),
-            (6.90, "none",    "USD/CNH moderate — within recent range"),
-            (0,    "notable", "CNH strong — China capital inflows or PBOC support"),
-        ],
-        direction_note="Rising = weaker CNH, more Asia stress. Falling = CNH strengthening.",
-        btc_note="Weak CNH signals regional stress or capital outflows — historically correlated with crypto selling pressure in Asia.",
+        level_thresholds=[(threshold, level, text)
+                          for threshold, level, _, text in _CNH_LEVEL_BANDS],
+        direction_note="Rising USD/CNH = weaker offshore CNH. Falling = stronger offshore CNH.",
+        btc_note="FX context only: higher USD/CNH indicates more USD pressure in the offshore pair. The exchange rate alone does not establish capital flows, PBOC intervention, or BTC selling pressure.",
         decimals=4,
     )
+    card["source"] = source
+    card["wind_effect"] = "neutral"
+    if "error" in card:
+        card["alert_level"] = "none"
+        return card
+    for threshold, _, effect, _ in _CNH_LEVEL_BANDS:
+        if card["current_raw"] >= threshold:
+            card["wind_effect"] = effect
+            break
+    return card
 
 
 def _build_em_basket() -> dict:
@@ -457,8 +486,13 @@ def _build_wind_assessment(
     elif carry_lvl == "notable":
         headwinds.append("JPY strengthening — carry trade under pressure")
 
-    if usdcnh.get("alert_level") in ("extreme", "notable"):
-        headwinds.append("CNH weak — Asia stress / USD dominance in region")
+    # A notable alert can describe either strong or weak CNH. Unknown/legacy
+    # direction contributes neither side, rather than guessing from severity.
+    if "error" not in usdcnh and usdcnh.get("alert_level") in ("extreme", "notable"):
+        if usdcnh.get("wind_effect") == "headwind":
+            headwinds.append("CNH weak — elevated USD pressure in the offshore pair")
+        elif usdcnh.get("wind_effect") == "tailwind":
+            tailwinds.append("CNH strong — lower USD pressure in the offshore pair")
 
     em_lvl = em.get("alert_level", "none")
     if em_lvl == "extreme":
